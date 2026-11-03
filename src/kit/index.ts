@@ -19,11 +19,12 @@ export {
 } from "./app.ts";
 export {
   defineCommand,
-  type AncestorModels,
-  type AncestorSources,
+  type Bundle,
   type CommandIntent,
   type ExitCode,
   type HandlerResult,
+  type Inherited,
+  type InheritSources,
   type ModelOfElement,
   type TabHookInfo,
 } from "./command.ts";

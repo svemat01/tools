@@ -3,6 +3,7 @@
  * executed. Each `@ts-expect-error` is a negative test — if the error goes
  * away, the check fails as an unused directive.
  */
+
 import { expectTypeOf } from "bun:test";
 
 import {
@@ -56,9 +57,7 @@ defineCommand(
         rest: string[];
       }>();
       expectTypeOf(context).toEqualTypeOf<BaseContext>();
-      // Nothing declared, nothing readable.
-      // @ts-expect-error no ancestors were declared
-      void models["/"];
+      expectTypeOf(models["/x"]).toEqualTypeOf<unknown>();
       // @ts-expect-error not a field of the model
       void model.missing;
     },
@@ -97,14 +96,18 @@ expectTypeOf<ModelOfElement<typeof groupOptions>>().toEqualTypeOf<{ name: number
 expectTypeOf<ModelOfElement<ReturnType<typeof toggle<"x", []>>>>().toEqualTypeOf<{ x: boolean }>();
 
 defineCommand(command(name("leaf"), option(name("name"), schema(z.boolean().default(false)))), {
-  ancestors: { "/": rootOptions, "/group": groupOptions },
-  run({ model, models }) {
+  inherit: { root: rootOptions, group: groupOptions },
+  run({ model }, _context, inherited) {
+    expectTypeOf(inherited).toEqualTypeOf<{
+      readonly root: { verbose: boolean; name: string | undefined };
+      readonly group: { name: number };
+    }>();
     // Same parameter name at three levels: three namespaces, three types.
     expectTypeOf(model.name).toEqualTypeOf<boolean>();
-    expectTypeOf(models["/"].name).toEqualTypeOf<string | undefined>();
-    expectTypeOf(models["/group"].name).toEqualTypeOf<number>();
-    // @ts-expect-error "/other" was not declared
-    void models["/other"];
+    expectTypeOf(inherited.root.name).toEqualTypeOf<string | undefined>();
+    expectTypeOf(inherited.group.name).toEqualTypeOf<number>();
+    // @ts-expect-error other was not declared
+    void inherited.other;
   },
 });
 
@@ -126,8 +129,11 @@ defineCommand(command(name("db")), {
 // @ts-expect-error route() groups cannot execute, so they take no handler
 defineCommand(route(name("group")), { run() {} });
 
-// @ts-expect-error ancestor keys are absolute route paths
-defineCommand(command(name("x")), { ancestors: { group: groupOptions }, run() {} });
+defineCommand(command(name("x")), {
+  // @ts-expect-error inherit accepts bundles, not route values
+  inherit: { group: route(name("group"), groupOptions) },
+  run() {},
+});
 
 defineCommand(command(name("x")), {
   // @ts-expect-error handlers return nothing or an exit code

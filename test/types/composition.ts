@@ -1,6 +1,7 @@
 /**
  * Compile-time tests: composing command trees and verifying them in createApp().
  */
+
 import { expectTypeOf } from "bun:test";
 
 import {
@@ -30,7 +31,7 @@ const rootOptions = extend(toggle(name("verbose")));
 const mediaOptions = extend(option(name("quality"), schema(z.number().default(80))));
 
 const web = defineCommand(command(name("web"), option(name("quality"), schema(z.number().optional()))), {
-  ancestors: { "/": rootOptions, "/media": mediaOptions },
+  inherit: { root: rootOptions, media: mediaOptions },
   run() {},
 });
 const og = defineCommand(command(name("og")), { run() {} });
@@ -79,14 +80,14 @@ void app;
 
 // --- createApp() rejects unsound trees ---------------------------------------
 
-// A command mounted where its declared ancestors do not exist.
-// @ts-expect-error "/media" is not an ancestor of /web here
-createApp(command(name("sv"), rootOptions, web));
+// A command mounted without an applier for its inherited bundle.
+// @ts-expect-error no route provides the media bundle model
+createApp(route(name("sv"), rootOptions, web));
 
 // An ancestor that does not provide the declared model.
 const wrongRoot = extend(option(name("verbose"), schema(z.string())));
 // @ts-expect-error "/" provides verbose: string, web expects boolean
-createApp(command(name("sv"), wrongRoot, media));
+createApp(route(name("sv"), wrongRoot, media));
 
 // Executable commands need handlers.
 // @ts-expect-error /plain is executable but has no handler
@@ -161,3 +162,9 @@ createApp(configured, {
     return step.resume([{ name: "file", value: { port: 1 } }]);
   },
 });
+
+// Mount paths and intervening groups do not affect bundle inheritance.
+createApp(route(name("sv"), rootOptions, route(name("renamed"), mediaOptions, route(name("nested"), web))));
+createApp(
+  route(name("sv"), rootOptions, route(name("a"), mediaOptions, web), route(name("b"), mediaOptions, web)),
+);

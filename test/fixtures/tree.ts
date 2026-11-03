@@ -12,6 +12,7 @@
  *   ├─ config [--config <file>] ⏸ [--port <n>]          checkpoint()
  *   └─ plugins ⏸ <dynamic commands>                     dynamic()
  */
+
 import {
   argument,
   checkpoint,
@@ -39,13 +40,18 @@ export interface Call {
   readonly model: unknown;
   readonly models: unknown;
   readonly context: unknown;
+  readonly inherited: unknown;
 }
 
 /** Handlers append here; tests reset it. */
 export const calls: Call[] = [];
 
-function record(intent: { route: string; model: unknown; models: unknown }, context: unknown): void {
-  calls.push({ route: intent.route, model: intent.model, models: intent.models, context });
+function record(
+  intent: { route: string; model: unknown; models: unknown },
+  context: unknown,
+  inherited: unknown = {},
+): void {
+  calls.push({ route: intent.route, model: intent.model, models: intent.models, context, inherited });
 }
 
 export const rootOptions = extend(
@@ -87,16 +93,16 @@ export const gamma = defineCommand(
     option(name("tag"), multiple(), schema(z.array(z.string()).default([])), complete(["red", "blue"])),
   ),
   {
-    ancestors: { "/": rootOptions, "/alpha": alphaOptions, "/alpha/beta": betaOptions },
-    run: (intent, context) => record(intent, context),
+    inherit: { root: rootOptions, alpha: alphaOptions, beta: betaOptions },
+    run: (intent, context, inherited) => record(intent, context, inherited),
   },
 );
 
 export const beta = defineCommand(
   command(name("beta"), description("Executable group"), betaOptions, gamma),
   {
-    ancestors: { "/alpha": alphaOptions },
-    run: (intent, context) => record(intent, context),
+    inherit: { alpha: alphaOptions },
+    run: (intent, context, inherited) => record(intent, context, inherited),
   },
 );
 
@@ -109,7 +115,7 @@ export const filesCommand = defineCommand(
     option(name("dir"), schema(z.string().optional()), complete(directories())),
     option(name("any"), schema(z.string().optional()), complete(files())),
   ),
-  { run: (intent, context) => record(intent, context) },
+  { run: (intent, context, inherited) => record(intent, context, inherited) },
 );
 
 export const native = defineCommand(
@@ -125,7 +131,7 @@ export const native = defineCommand(
     ),
   ),
   {
-    run: (intent, context) => record(intent, context),
+    run: (intent, context, inherited) => record(intent, context, inherited),
     // Per-command native hook: add an option Router does not know about.
     tab(command) {
       command.option("extra", "Added through the native Tab API", (add) => add("native-extra", ""));
@@ -145,7 +151,7 @@ export const shaped = defineCommand(
         .transform(({ first, last }) => ({ full: `${first} ${last}` })),
     ),
   ),
-  { run: (intent, context) => record(intent, context) },
+  { run: (intent, context, inherited) => record(intent, context, inherited) },
 );
 
 export const config = defineCommand(
@@ -155,7 +161,7 @@ export const config = defineCommand(
     checkpoint(),
     option(name("port"), schema(z.number().int().default(3000)), complete(["3000", "8080"])),
   ),
-  { run: (intent, context) => record(intent, context) },
+  { run: (intent, context, inherited) => record(intent, context, inherited) },
 );
 
 export const plugins = defineCommand(
@@ -164,12 +170,15 @@ export const plugins = defineCommand(
     dynamic(z.array(z.string()), (names) =>
       extend(
         ...names.map((plugin) =>
-          defineCommand(command(name(plugin)), { run: (intent, context) => record(intent, context) }),
+          defineCommand(command(name(plugin)), {
+            inherit: { root: rootOptions },
+            run: (intent, context, inherited) => record(intent, context, inherited),
+          }),
         ),
       ),
     ),
   ),
-  { run: (intent, context) => record(intent, context) },
+  { run: (intent, context, inherited) => record(intent, context, inherited) },
 );
 
 export const fx = defineCommand(

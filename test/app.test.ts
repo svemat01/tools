@@ -73,6 +73,11 @@ describe("dispatch", () => {
       "g",
       "t",
     ]);
+    expect(calls[0]?.inherited).toEqual({
+      root: { verbose: false, name: "r", level: 1 },
+      alpha: { name: "a" },
+      beta: { name: "b", force: true },
+    });
     expect(calls[0]?.models).toEqual({
       "/": { verbose: false, name: "r", level: 1 },
       "/alpha": { name: "a" },
@@ -88,6 +93,11 @@ describe("dispatch", () => {
     expect(models["/alpha"]?.name).toBe("alpha");
     expect(models["/alpha/beta"]?.name).toBe("only-beta");
     expect(models["/alpha/beta/gamma"]?.name).toBeUndefined();
+    expect(calls[0]?.inherited).toEqual({
+      root: { verbose: false, name: undefined, level: 1 },
+      alpha: { name: "alpha" },
+      beta: { name: "only-beta", force: false },
+    });
   });
 
   test("executable group runs its own handler", async () => {
@@ -110,9 +120,10 @@ describe("dispatch", () => {
   });
 
   test("dynamic() routes dispatch to handlers defined inside the extension", async () => {
-    const result = await runApp(fixtureApp(), ["plugins", "world"]);
+    const result = await runApp(fixtureApp(), ["--name", "dynamic-root", "plugins", "world"]);
     expect(result.code).toBe(0);
     expect(calls.map((call) => call.route)).toEqual(["/plugins/world"]);
+    expect(calls[0]?.inherited).toEqual({ root: { verbose: false, name: "dynamic-root", level: 1 } });
   });
 
   test("handler exit codes and thrown errors", async () => {
@@ -321,14 +332,31 @@ describe("definition validation (runtime)", () => {
     ]);
   });
 
-  test("declared ancestors must be ancestors of the mount point", () => {
+  test("inherited bundles must have an applier on the mount path", () => {
     const opts = extend(toggle(name("deep")));
-    const leaf = defineCommand(command(name("leaf")), { ancestors: { "/group": opts }, run() {} });
-    const tree = command(name("x"), route(name("other"), leaf));
+    const leaf = defineCommand(command(name("leaf")), { inherit: { group: opts }, run() {} });
+    const tree = route(name("x"), route(name("other"), leaf));
     // @ts-expect-error caught at compile time too
     expect(problems(() => createApp(tree))).toContainEqual(
-      '/other/leaf: declares ancestor "/group", which is not an ancestor of this route',
+      '/other/leaf: inherits "group", but no route on this path applies that bundle',
     );
+  });
+
+  test("same-shape bundles require parameter identity", () => {
+    const applied = extend(toggle(name("enabled")));
+    const other = extend(toggle(name("enabled")));
+    const leaf = defineCommand(command(name("leaf")), { inherit: { other }, run() {} });
+    expect(problems(() => createApp(route(name("x"), applied, leaf)))).toEqual([
+      '/leaf: inherits "other", but no route on this path applies that bundle',
+    ]);
+  });
+
+  test("empty bundles cannot be inherited", () => {
+    const empty = extend();
+    const leaf = defineCommand(command(name("leaf")), { inherit: { empty }, run() {} });
+    expect(problems(() => createApp(route(name("x"), empty, leaf)))).toEqual([
+      '/leaf: inherits "empty", which declares no parameters',
+    ]);
   });
 
   test("route names must be single words", () => {
@@ -349,5 +377,45 @@ describe("instances", () => {
     expect((await runApp(a, ["--two"])).code).toBe(2);
     expect(a.complete(["--"]).candidates.map((c) => c.value)).toEqual(["--one", "--no-one", "--help"]);
     expect(b.complete(["--"]).candidates.map((c) => c.value)).toEqual(["--two", "--no-two", "--help"]);
+  });
+});
+
+describe("bundle resolution", () => {
+  test("the nearest application wins, including the command itself", async () => {
+    const options = extend(option(name("value"), schema(z.string().default("default"))));
+    const received: unknown[] = [];
+    const leaf = defineCommand(command(name("leaf")), {
+      inherit: { options },
+      run(_intent, _context, inherited) {
+        received.push(inherited.options);
+      },
+    });
+    const own = defineCommand(command(name("own"), options), {
+      inherit: { options },
+      run(_intent, _context, inherited) {
+        received.push(inherited.options);
+      },
+    });
+    const app = createApp(route(name("x"), options, route(name("group"), options, leaf, own)));
+    expect((await runApp(app, ["--value", "root", "group", "--value", "group", "leaf"])).code).toBe(0);
+    expect(
+      (await runApp(app, ["--value", "root", "group", "--value", "group", "own", "--value", "own"])).code,
+    ).toBe(0);
+    expect(received).toEqual([{ value: "group" }, { value: "own" }]);
+  });
+
+  test("one command can inherit from either mount group", async () => {
+    const options = extend(option(name("value"), schema(z.string())));
+    const received: unknown[] = [];
+    const leaf = defineCommand(command(name("leaf")), {
+      inherit: { options },
+      run(_intent, _context, inherited) {
+        received.push(inherited.options);
+      },
+    });
+    const app = createApp(route(name("x"), route(name("a"), options, leaf), route(name("b"), options, leaf)));
+    expect((await runApp(app, ["a", "--value", "first", "leaf"])).code).toBe(0);
+    expect((await runApp(app, ["b", "--value", "second", "leaf"])).code).toBe(0);
+    expect(received).toEqual([{ value: "first" }, { value: "second" }]);
   });
 });

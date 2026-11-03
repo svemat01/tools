@@ -58,9 +58,11 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
    );
    ```
 
+To read parent options, export a bundle from its own module, declare `inherit: { media: mediaOptions }`, and read `media` from the handler’s third argument.
+
 2. **Mount it** inside its group, which is again plain Router: `route(name("media"), mediaOptions, web, inspect, thumb)`.
 
-3. **Run `bun check && bun test`.** If the command can't work where you mounted it, `bun check` fails at `createApp(...)` in `src/app.ts` and names the route. That covers a missing handler, a declared ancestor that isn't there, missing context services, duplicate names, a widened route type, and a missing checkpoint driver.
+3. **Run `bun check && bun test`.** If the command can't work where you mounted it, `bun check` fails at `createApp(...)` in `src/app.ts` and names the route. That covers a missing handler, an inherited bundle without an applier, missing context services, duplicate names, a widened route type, and a missing checkpoint driver.
 
 There is nothing else to register: dispatch, help, and completion all come from the definition.
 
@@ -76,9 +78,9 @@ There is nothing else to register: dispatch, help, and completion all come from 
 
 Keep child lists as tuples. A plain `AnyRoute[]` throws away every path and model type, and `createApp` rejects it.
 
-### Parent options: `ancestors`
+### Parent options: `inherit`
 
-Router scopes every option to the route that declares it, and an execute intent carries one model per route on its path: `intent.model` (this command's) and `intent.models["/"]`, `intent.models["/media"]`, and so on. A command module can't know where it will be mounted, so it **declares** which ancestor models it reads by pointing at the ancestor's exported option bundle:
+Router scopes every option to the route that declares it. A command declares the option bundles it reads under local aliases; the handler receives their typed models as its third argument:
 
 ```ts
 // src/commands/media/options.ts — its own module, so children can import it
@@ -88,15 +90,17 @@ export const mediaOptions = extend(option(name("quality"), schema(z.number().int
 export const web = defineCommand(
   command(name("web"), option(name("quality"), schema(z.number().optional()))),
   {
-    ancestors: { "/media": mediaOptions },
-    run({ model, models }) {
-      const quality = model.quality ?? models["/media"].quality; // number | undefined, then number
+    inherit: { media: mediaOptions },
+    run({ model }, _context, { media }) {
+      const quality = model.quality ?? media.quality; // number | undefined, then number
     },
   },
 );
 ```
 
-`createApp` then checks that Router's real intent at the mount path provides those models. Mount `web` somewhere without a `/media` ancestor, or give `/media` an incompatible `quality`, and it fails to compile. Namespaces never merge: the same option name at several levels stays separate (`models["/media"].quality` and `model.quality` above).
+`createApp` checks that a route on the mount path provides a compatible model. Runtime validation requires the exact bundle, by parameter identity. A different bundle with the same shape passes the type check but fails runtime validation. The nearest route applying the bundle wins, including the command itself and root. Namespaces stay separate: `media.quality` and `model.quality` above.
+
+Commands no longer depend on mount paths: moving a group does not break its children, and handlers do not index models by path strings. Keep parent bundles in their own module to avoid circular imports.
 
 **Option position follows Router.** Parent options go before the child's name:
 

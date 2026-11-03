@@ -21,6 +21,7 @@
  * `test/router-meta.test.ts` pins this behaviour against the installed Router
  * version; if an upgrade changes these structures, those tests fail first.
  */
+import { name, route } from "@bomb.sh/router";
 import type { AnyRoute, CLIRead, CLISymbol, Method, ReadCLI, RoutePath } from "@bomb.sh/router";
 
 /** A Router parameter object as stored in `phase.model.params`. */
@@ -248,4 +249,27 @@ class ProbeTokens implements TokenInput {
   private without(indices: readonly number[]): ProbeTokens {
     return new ProbeTokens(this.tokens, new Set([...this.claimed, ...indices]));
   }
+}
+
+/**
+ * The parameter objects a bundle (`option()`, `toggle()`, `extend(...)`)
+ * contributes. Router stores these exact objects on every route that applies
+ * the bundle, so identity tells which route applied it.
+ */
+export function paramsOf(bundle: (value: never) => unknown): readonly RouterParam[] {
+  // Typed as `never`: Router's pipeline types cannot express "some element";
+  // at runtime every element is a route => route function.
+  return describeRoute(route(name("~bundle"), bundle as never)).params.map((meta) => meta.param);
+}
+
+/** The deepest route among `candidates` that applied every parameter of `bundle`. */
+export function findApplier(
+  bundle: (value: never) => unknown,
+  candidates: readonly RouteMeta[],
+): RouteMeta | undefined {
+  const params = paramsOf(bundle);
+  if (params.length === 0) return undefined;
+  return candidates.findLast((meta) =>
+    params.every((param) => meta.params.some((own) => own.param === param)),
+  );
 }

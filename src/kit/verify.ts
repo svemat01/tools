@@ -13,7 +13,7 @@
  */
 import type { AnyRoute, IntentsOf, MethodsOf, RoutePath } from "@bomb.sh/router";
 
-import type { commandKey, CommandSpec } from "./command.ts";
+import type { commandKey, CommandSpec, ModelOfElement } from "./command.ts";
 import type { BaseContext } from "./context.ts";
 
 /** Names reserved at the root (the Tab completion protocol uses `complete`). */
@@ -88,26 +88,31 @@ type ReservedNames<P extends RoutePath, Names> = P extends "/"
 
 type HandlerProblems<Root extends AnyRoute, P extends RoutePath, R extends AnyRoute, Context> =
   "execute" extends MethodsOf<R>
-    ? R extends { readonly [commandKey]: CommandSpec<infer Intent, infer Needs> }
-      ? IntentProblems<P, ExecuteAt<Root, P>, Intent> | ContextProblems<P, Context, Needs>
+    ? R extends { readonly [commandKey]: CommandSpec<infer Intent, infer Needs, infer Inherit> }
+      ? | IntentProblems<P, ExecuteAt<Root, P>, Intent>
+        | ContextProblems<P, Context, Needs>
+        | InheritProblems<P, ExecuteAt<Root, P>, Inherit>
       : `${P}: executable command has no handler (wrap it with defineCommand())`
     : never;
 
-type IntentProblems<P extends RoutePath, Actual, Expected> = [Actual] extends [Expected]
-  ? never
-  : Expected extends { readonly models: infer Declared }
-    ? Actual extends { readonly models: infer Provided }
-      ? AncestorProblems<P, Provided, Declared>
-      : `${P}: Router has no execute intent for this route`
+type IntentProblems<P extends RoutePath, Actual, Expected> = [Actual] extends [never]
+  ? `${P}: Router has no execute intent for this route`
+  : [Actual] extends [Expected]
+    ? never
     : `${P}: the handler does not accept Router's execute intent`;
 
-type AncestorProblems<P extends RoutePath, Provided, Declared> = {
-  [K in keyof Declared]: K extends keyof Provided
-    ? [Provided[K]] extends [Declared[K]]
-      ? never
-      : `${P}: ancestor "${K & string}" does not provide the model the handler declares`
-    : `${P}: declares ancestor "${K & string}", which is not an ancestor of this route`;
-}[keyof Declared];
+/** The models of every route on the path of an execute intent (self included). */
+type ModelsOnPath<Actual> = Actual extends { readonly models: infer Models } ? Models[keyof Models] : never;
+
+/**
+ * Each inherited bundle must be satisfiable by some route on the path. (At
+ * runtime the kit finds the exact route that applied the bundle; see app.ts.)
+ */
+type InheritProblems<P extends RoutePath, Actual, Inherit> = {
+  [K in keyof Inherit]: [Extract<ModelsOnPath<Actual>, ModelOfElement<Inherit[K]>>] extends [never]
+    ? `${P}: inherits "${K & string}", but no route on this path provides that bundle's options`
+    : never;
+}[keyof Inherit];
 
 type ContextProblems<P extends RoutePath, Context, Needs> = [Context] extends [Needs]
   ? never

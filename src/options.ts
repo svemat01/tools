@@ -2,7 +2,7 @@
  * Options of the root `sv` route.
  *
  * Kept in their own module so commands can declare them as an ancestor
- * (`ancestors: { "/": globalOptions }`) without importing the root, which
+ * (`inherit: { global: globalOptions }`) without importing the root, which
  * imports them.
  */
 import { description, extend, name, option, schema, toggle } from "@bomb.sh/router";

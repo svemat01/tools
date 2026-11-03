@@ -3,6 +3,7 @@
  * document as a stable introspection API. If a Router upgrade breaks one of
  * these, fix `src/kit/router-meta.ts` (the only module that reads them).
  */
+
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -30,6 +31,7 @@ import { z } from "zod";
 import { handlerOf } from "../src/kit/command.ts";
 import { completionOf } from "../src/kit/complete.ts";
 import { complete, defineCommand, describeRoute, flattenRoutes, type ParamMeta } from "../src/kit/index.ts";
+import { findApplier, paramsOf } from "../src/kit/router-meta.ts";
 
 interface Same extends Transform {
   readonly input: Param<string, unknown, "one">;
@@ -234,4 +236,26 @@ describe("Router contracts the runtime relies on", () => {
     // --v2 sits inside the /g segment, which does not declare it.
     expect(result.ok).toBe(false);
   });
+});
+
+test("bundle parameters retain identity at every application", () => {
+  const single = toggle(name("enabled"));
+  const bundle = extend(single, option(name("value"), schema(z.string())));
+  const meta = describeRoute(route(name("x"), bundle, route(name("group"), bundle, command(name("leaf")))));
+  const routes = flattenRoutes(meta);
+  const params = paramsOf(bundle);
+  expect(params).toHaveLength(2);
+  expect(paramsOf(single)[0]).toBe(params[0]);
+  for (const applied of routes.slice(0, 2)) {
+    expect(applied.params).toHaveLength(2);
+    applied.params.forEach((param, index) => {
+      const expected = params[index];
+      if (!expected) throw new Error("missing bundle parameter");
+      expect(param.param).toBe(expected);
+    });
+  }
+  expect(findApplier(bundle, routes)).toBe(routes[1]);
+  expect(findApplier(bundle, routes.slice(0, 1))).toBe(routes[0]);
+  expect(findApplier(extend(toggle(name("enabled"))), routes)).toBeUndefined();
+  expect(findApplier(extend(), routes)).toBeUndefined();
 });

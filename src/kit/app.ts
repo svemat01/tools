@@ -28,9 +28,16 @@ import {
   type ValueSource,
 } from "@bomb.sh/router";
 
-import { type ExitCode, handlerOf, type HandlerResult } from "./command.ts";
+import { type ExitCode, handlerOf, type HandlerResult, type InheritSources } from "./command.ts";
 import { type BaseContext, baseContext, type RunOptions } from "./context.ts";
-import { describeRoute, flattenRoutes, type RouteMeta } from "./router-meta.ts";
+import {
+  describeRoute,
+  findApplier,
+  flattenRoutes,
+  paramsOf,
+  type RouteMeta,
+  toPath,
+} from "./router-meta.ts";
 import {
   buildTab,
   completeWords,
@@ -198,6 +205,25 @@ function createRuntime(root: AnyRoute, options: InternalOptions): Runtime {
     return result;
   }
 
+  /** Resolve each inherited bundle to the model of the nearest route on the path that applied it. */
+  function inherit(
+    sources: InheritSources,
+    path: readonly string[],
+    models: Readonly<Record<string, unknown>>,
+  ): Record<string, unknown> {
+    // Root first; routes added by dynamic() have no static metadata and are skipped.
+    const candidates = [meta, ...path.map((_, depth) => routes.get(toPath(path.slice(0, depth + 1))))].filter(
+      (route): route is RouteMeta => route !== undefined,
+    );
+    return Object.fromEntries(
+      Object.entries(sources).map(([alias, bundle]) => {
+        const applier = findApplier(bundle, candidates);
+        if (!applier) throw new Error(`${toPath(path)}: inherited "${alias}" is not applied on this path`);
+        return [alias, models[applier.path]];
+      }),
+    );
+  }
+
   async function execute(intent: AnyIntent, base: BaseContext): Promise<ExitCode> {
     if (intent.method !== "execute") throw new Error(`Expected an execute intent, got ${intent.method}`);
     const spec = handlerOf(intent.definition);
@@ -207,9 +233,10 @@ function createRuntime(root: AnyRoute, options: InternalOptions): Runtime {
     // the app context are assignable to what this handler declared, and the
     // context factory is typed to accept this tree's execute intents.
     const build = options.context as ((base: BaseContext, intent: unknown) => unknown) | undefined;
+    const inherited = inherit(spec.inherit ?? {}, intent.path, intent.models);
     const context = build ? await build(base, intent) : base;
-    const run = spec.run as (intent: unknown, context: unknown) => HandlerResult;
-    const code = await run(intent, context);
+    const run = spec.run as (intent: unknown, context: unknown, inherited: unknown) => HandlerResult;
+    const code = await run(intent, context, inherited);
     return typeof code === "number" ? code : 0;
   }
 
@@ -340,10 +367,18 @@ export function validate(meta: RouteMeta): string[] {
     if (executable && !spec)
       problems.push(`${route.path}: executable command has no handler (wrap it with defineCommand())`);
     if (!executable && spec) problems.push(`${route.path}: has a handler but is not executable`);
-    for (const key of Object.keys(spec?.ancestors ?? {})) {
-      const isAncestor = route.path !== "/" && (key === "/" || route.path.startsWith(`${key}/`));
-      if (!isAncestor)
-        problems.push(`${route.path}: declares ancestor "${key}", which is not an ancestor of this route`);
+    const onPath = flattenRoutes(meta).filter(
+      (candidate) =>
+        candidate.path === "/" ||
+        candidate.path === route.path ||
+        route.path.startsWith(`${candidate.path}/`),
+    );
+    for (const [alias, bundle] of Object.entries(spec?.inherit ?? {})) {
+      if (paramsOf(bundle).length === 0) {
+        problems.push(`${route.path}: inherits "${alias}", which declares no parameters`);
+      } else if (!findApplier(bundle, onPath)) {
+        problems.push(`${route.path}: inherits "${alias}", but no route on this path applies that bundle`);
+      }
     }
 
     const names = new Set<string>();

@@ -117,7 +117,7 @@ A personal CLI built on `@bomb.sh/router` (commands, parsing, help) and `@bomb.s
 Adding a command:
 
 1. Create `src/commands/<group>/<name>.ts` exporting `defineCommand(command(name("x"), ...routerElements), { run(intent, context) {...} })`. Use native Router elements; the handler's input is inferred, so do not write model interfaces.
-2. To read a parent's options, export the parent's options as an `extend(...)` bundle in its own module and declare `ancestors: { "/group": groupOptions }`. Never cast to reach `intent.models`.
+2. To read a parent's options, export the parent's options as an `extend(...)` bundle in its own module and declare `inherit: { group: groupOptions }`. Read `group` from the handler’s third argument; never cast to reach `intent.models`.
 3. To use app services, annotate the handler's second parameter as `AppContext` (from `src/context.ts`).
 4. To add completion candidates, put `complete([...])`, `complete(files())`, `complete(directories())` or a native Tab handler on the parameter, next to `schema()`. Never derive candidates from schemas.
 5. Mount it in its group (`route(...)`/`command(...)` children), then run `bun check && bun test`. A `"~sv problems"` type error at `createApp()` lists what is wrong, by route path.

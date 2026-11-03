@@ -5,14 +5,19 @@
  * symbol-keyed property), so it composes with `route()`, `command()` and
  * `extend()` exactly like any other route.
  *
- * Handlers receive Router's own execute intent, not a re-shaped copy. Its type
- * is narrowed to what the handler can know at definition time:
+ * A handler receives three things:
  *
- * - `intent.model` — this command's model, inferred from the definition.
- * - `intent.models[path]` — ancestor models the command *declares* through
- *   `ancestors`. A command cannot know where it will be mounted, so it states
- *   what it expects and `createApp()` proves, at compile time, that Router's
- *   real intent at the mount point satisfies it.
+ * - `intent`: Router's own execute intent (not a copy), with `intent.model`
+ *   inferred from the definition.
+ * - `context`: the application context (`BaseContext` unless annotated).
+ * - `inherited`: models of option bundles applied by routes above it, under
+ *   local names the command picks (`inherit: { media: mediaOptions }`).
+ *
+ * A command cannot know where it will be mounted, so it names the *bundles* it
+ * reads rather than paths. At runtime each bundle is found on the nearest
+ * route of the invoked path that applied it (by parameter identity). At
+ * compile time `createApp()` proves that some route on the mount path
+ * provides a compatible model.
  */
 
 import type { AnyRoute, Issue, Literal, MethodsOf, ModelOf, Path, route, RoutePath } from "@bomb.sh/router";
@@ -20,11 +25,11 @@ import type { Command as TabCommand, RootCommand } from "@bomb.sh/tab";
 
 import type { BaseContext } from "./context.ts";
 
-/** No declared ancestor models: `intent.models` has no readable keys. */
-export type NoModels = Record<never, never>;
-
-/** What a handler sees: Router's execute intent with the models it declared. */
-export interface CommandIntent<Model, Models = NoModels> {
+/**
+ * What a handler sees: Router's execute intent. `models` is Router's object
+ * too, but its entries are untyped here; read parent options with `inherit`.
+ */
+export interface CommandIntent<Model> {
   readonly ok: true;
   readonly method: "execute";
   readonly route: RoutePath;
@@ -33,7 +38,7 @@ export interface CommandIntent<Model, Models = NoModels> {
   readonly literals: Iterable<Literal>;
   readonly issues: readonly Issue[];
   readonly model: Model;
-  readonly models: Models;
+  readonly models: { readonly [path: RoutePath]: unknown };
 }
 
 export type ExitCode = number;
@@ -41,6 +46,9 @@ export type HandlerResult = void | ExitCode | Promise<void | ExitCode>;
 
 /** Anything Router accepts as a pipeline element or child route. */
 export type RouterInput = ((value: never) => unknown) | AnyRoute;
+
+/** A Router element that adds parameters: `option()`, `toggle()`, `argument()`, `extend(...)`. */
+export type Bundle = (value: never) => unknown;
 
 /**
  * The model contributed by a Router element (`option()`, `toggle()`,
@@ -54,22 +62,22 @@ export type ModelOfElement<E> = E extends AnyRoute
       : never
     : never;
 
-/** Ancestor route path → the Router element(s) that define its model. */
-export type AncestorSources = { readonly [path: RoutePath]: RouterInput };
+/** Local name → option bundle applied by a route above (or at) the command. */
+export type InheritSources = { readonly [name: string]: Bundle };
 
-/** Rejects keys that are not absolute route paths (`media` instead of `/media`). */
-type OnlyRoutePaths<A> = { readonly [K in keyof A as K extends RoutePath ? never : K]: never };
+/** The models a handler receives for its `inherit` declaration. */
+export type Inherited<I> = { readonly [K in keyof I]: ModelOfElement<I[K]> };
 
-export type AncestorModels<A> = { readonly [K in keyof A]: ModelOfElement<A[K]> };
+export type NoInherit = Record<never, never>;
 
 export interface TabHookInfo {
   readonly root: RootCommand;
   readonly path: RoutePath;
 }
 
-export interface CommandSpec<Intent, Context> {
-  readonly ancestors?: AncestorSources;
-  readonly run: (intent: Intent, context: Context) => HandlerResult;
+export interface CommandSpec<Intent, Context, Inherit = InheritSources> {
+  readonly inherit?: Inherit;
+  readonly run: (intent: Intent, context: Context, inherited: Inherited<Inherit>) => HandlerResult;
   /** Customize the generated native Tab command for this route. */
   readonly tab?: (command: TabCommand, info: TabHookInfo) => void;
 }
@@ -77,8 +85,8 @@ export interface CommandSpec<Intent, Context> {
 export const commandKey: unique symbol = Symbol("sv.command");
 
 /** The type-level and runtime marker `defineCommand()` adds to a route. */
-export interface Handled<Intent = never, Context = never> {
-  readonly [commandKey]: CommandSpec<Intent, Context>;
+export interface Handled<Intent = never, Context = never, Inherit = InheritSources> {
+  readonly [commandKey]: CommandSpec<Intent, Context, Inherit>;
 }
 
 type Precise<D extends AnyRoute> = AnyRoute extends D
@@ -93,26 +101,26 @@ type Precise<D extends AnyRoute> = AnyRoute extends D
 
 export function defineCommand<
   const D extends AnyRoute,
-  const A extends AncestorSources = NoModels,
+  const I extends InheritSources = NoInherit,
   C = BaseContext,
 >(
   definition: D & Precise<D>,
   spec: {
-    /** Ancestor models this handler reads, keyed by absolute route path. */
-    readonly ancestors?: A & OnlyRoutePaths<A>;
-    readonly run: (intent: CommandIntent<ModelOf<D>, AncestorModels<A>>, context: C) => HandlerResult;
+    /** Option bundles of routes above this command, under local names. */
+    readonly inherit?: I;
+    readonly run: (intent: CommandIntent<ModelOf<D>>, context: C, inherited: Inherited<I>) => HandlerResult;
     readonly tab?: (command: TabCommand, info: TabHookInfo) => void;
   },
-): D & Handled<CommandIntent<ModelOf<D>, AncestorModels<A>>, C> {
+): D & Handled<CommandIntent<ModelOf<D>>, C, I> {
   return { ...definition, [commandKey]: spec };
 }
 
 /** The handler attached to a route by `defineCommand()`, if any. */
-export function handlerOf(route: AnyRoute): CommandSpec<never, never> | undefined {
+export function handlerOf(route: AnyRoute): CommandSpec<never, never, InheritSources> | undefined {
   const spec: unknown = commandKey in route ? route[commandKey] : undefined;
   return isSpec(spec) ? spec : undefined;
 }
 
-function isSpec(value: unknown): value is CommandSpec<never, never> {
+function isSpec(value: unknown): value is CommandSpec<never, never, InheritSources> {
   return typeof value === "object" && value !== null && "run" in value && typeof value.run === "function";
 }

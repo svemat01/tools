@@ -23,9 +23,9 @@ Options considered:
 1. **Handlers keyed by path at the app** (`createApp(root, { "/media/web": handler })`). This gives perfect types from Router's `IntentsOf`, but every command is registered twice (route and path) and handlers live away from their definitions.
 2. **A handler as a Router element** (`command(name("x"), ..., run(fn))`). It's native-looking, but TypeScript can't contextually type `fn` from the elements before it in a variadic call, so the handler would be untyped.
 3. **Implicit ancestor context.** A merged object of every ancestor's options. It flattens namespaces (collisions), and a module can't know what it'll get. It's either unsafe or needs global type registration.
-4. **Declare, then verify (chosen).** `defineCommand(command(...), { ancestors, run })` infers the own model from the definition. The module _declares_ the ancestor models it reads by referencing the ancestors' exported option bundles (`ancestors: { "/media": mediaOptions }`), and annotates its context type if it needs more than `BaseContext`. `createApp(root)` then proves, for every executable route, that `Extract<IntentsOf<Root>, { route: P }>` is assignable to the handler's declared input, and that the app's context is assignable to what it declared.
+4. **Declare bundles, resolve by identity, verify at createApp (chosen).** `defineCommand(command(...), { inherit, run })` infers the own model from the definition. Commands declare option bundles under local aliases (`inherit: { media: mediaOptions }`) and receive their typed models as the handler's third argument. Runtime resolution finds the nearest route on the invoked path that applied the exact bundle, by parameter identity. `createApp(root)` checks that a model on the mount path is assignable to each bundle's model and verifies the application context. A different bundle with the same shape passes the type check but fails runtime validation.
 
-Option 4 keeps commands self-contained, preserves Router's per-route namespaces, and the check is exactly the soundness condition for handing Router's intent to the handler. The cost is one explicit `ancestors` entry when a command reads a parent's options. A command mounted where its ancestors don't exist, or that expects a different shape, fails to compile at `createApp` with a message naming the path.
+Option 4 keeps commands self-contained and preserves Router's per-route namespaces. Bundles decouple commands from mount paths: moving a group does not break its children, and handlers do not index by path strings. Missing or incompatible models fail at `createApp` with a message naming the path.
 
 The handler receives Router's **actual intent object**. `intent.model`, `intent.models`, `intent.literals`, `intent.definition` and `intent.path` are all Router's, typed down to what the handler declared.
 
@@ -123,7 +123,7 @@ These are Tab's, not the kit's, and each is pinned or documented by tests:
 
 ## Unresolved trade-offs
 
-- `ancestors` names absolute paths. Moving a group means updating the commands that read its options. The compiler finds every one.
+- Parent option bundles must live in their own module to avoid circular imports. A bundle applied at several levels resolves to the nearest route, including the command itself.
 - Completion of dynamically discovered routes (`dynamic()`) would need I/O during completion, which the kit deliberately never does. Use the app-level `tab` hook to add them from a cache if needed.
 - Router decodes values before schemas see them (`007` → `7` first), so values that look like numbers need string schemas. That's Router behaviour, documented upstream.
 - Version-sensitive code is isolated and tested, but Router and Tab are pre-1.0. Upgrade both deliberately, then run `bun run verify`.

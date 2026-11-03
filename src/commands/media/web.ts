@@ -40,9 +40,9 @@ export const web = defineCommand(
     ),
   ),
   {
-    ancestors: { "/media": mediaOptions },
-    run({ model, models }, context: AppContext) {
-      const quality = model.quality ?? models["/media"].quality;
+    inherit: { media: mediaOptions },
+    run({ model }, context: AppContext, { media }) {
+      const quality = model.quality ?? media.quality;
       const out = model.out ?? `${model.input.replace(/\.[^./]+$/, "")}.${model.format}`;
       context.log.debug(
         `quality ${quality} from ${model.quality === undefined ? "sv media --quality" : "--quality"}`,
