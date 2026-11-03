@@ -1,0 +1,30 @@
+{
+  "name": "sv",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal development toolkit CLI built on @bomb.sh/router and @bomb.sh/tab",
+  "bin": {
+    "sv": "./src/main.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "sv": "bun src/main.ts",
+    "check": "bun check",
+    "lint": "bun lint --max-warnings 0",
+    "fmt": "bun fmt",
+    "verify": "bun fmt --check && bun lint --max-warnings 0 && bun check && bun test"
+  },
+  "dependencies": {
+    "@bomb.sh/router": "0.8.0",
+    "@bomb.sh/tab": "0.0.22",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "bun": "1.4.4-canary.20261103.1",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  }
+}

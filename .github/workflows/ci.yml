@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      # Real-shell completion tests run when these are present (and skip otherwise).
+      - name: Install shells
+        run: sudo apt-get update && sudo apt-get install -y zsh bash-completion
+
+      # Also installs the pinned Bun toolchain (devDependency `bun`) that the
+      # check/lint/fmt scripts use, so every run lints with the same version.
+      - run: bun install --frozen-lockfile
+
+      - name: Format
+        run: bun run fmt --check
+      - name: Lint
+        run: bun run lint
+      - name: Types
+        run: bun run check
+      - name: Test
+        run: bun test

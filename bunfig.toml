@@ -1,0 +1,19 @@
+# Bun configuration: runtime, test runner, formatter and linter.
+
+[install]
+# Dependencies are pinned exactly in package.json; keep it that way.
+exact = true
+
+[test]
+root = "test"
+# Shell integration tests spawn real shells; give them room.
+timeout = 20000
+
+[fmt]
+printWidth = 110
+sortImports = true
+sortPackageJson = true
+
+[lint.rules]
+"@typescript-eslint/consistent-type-imports" = "error"
+"prefer-const" = "error"
