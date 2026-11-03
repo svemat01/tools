@@ -7,8 +7,13 @@
 import { command, description, name, printHelp, version } from "@bomb.sh/router";
 
 import pkg from "../package.json" with { type: "json" };
+import { blog } from "./commands/blog/index.ts";
 import { dev } from "./commands/dev/index.ts";
-import { media } from "./commands/media/index.ts";
+import { gremlins } from "./commands/gremlins.ts";
+import { img } from "./commands/img/index.ts";
+import { jwt } from "./commands/jwt/index.ts";
+import { tunnel } from "./commands/tunnel.ts";
+import { video } from "./commands/video/index.ts";
 import { createContext } from "./context.ts";
 import { createApp, defineCommand } from "./kit/index.ts";
 import { globalOptions } from "./options.ts";
@@ -19,7 +24,12 @@ export const sv = defineCommand(
     description("Personal development toolkit"),
     version(pkg.version),
     globalOptions,
-    media,
+    img,
+    blog,
+    video,
+    gremlins,
+    tunnel,
+    jwt,
     dev,
   ),
   {

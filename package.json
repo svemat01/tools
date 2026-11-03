@@ -17,6 +17,17 @@
   "dependencies": {
     "@bomb.sh/router": "0.8.0",
     "@bomb.sh/tab": "0.0.22",
+    "diff": "9.0.0",
+    "jose": "6.2.15",
+    "pixelmatch": "8.0.0",
+    "remark-frontmatter": "5.0.0",
+    "remark-gfm": "4.0.1",
+    "remark-mdx": "3.1.1",
+    "remark-parse": "11.0.0",
+    "sharp": "0.35.5",
+    "unified": "11.0.5",
+    "unist-util-visit": "5.2.0",
+    "yaml": "2.9.1",
     "zod": "4.6.7"
   },
   "devDependencies": {
