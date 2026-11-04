@@ -8,34 +8,36 @@
 
 import { existsSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
 import { z } from "zod";
 
-import { transformImage, extensionForFormat, normalizeFormat, type ImageFormat } from "./image.ts";
-import {
-  applyEdits,
-  extractFrontmatter,
-  isExternalUrl,
-  normalizeBlankLines,
-  parseMarkdown,
-  splitUrlSuffix,
-  stripTrackingParameters,
-  toUrlPath,
-  urlEdit,
-  type MarkdownReference,
-  type TextEdit,
-} from "./markdown.ts";
 import {
   discoverFiles,
   displayPath,
   encodeTextFile,
   fileSize,
   planOutputPath,
+  readFileBytes,
   readTextFile,
-  writeFileAtomic,
   type TextFile,
+  writeFileAtomic,
 } from "./fs.ts";
-import { scanText, fixText } from "./unicode.ts";
+import { extensionForFormat, type ImageFormat, normalizeFormat, transformImage } from "./image.ts";
+import {
+  applyEdits,
+  extractFrontmatter,
+  isExternalUrl,
+  type MarkdownReference,
+  normalizeBlankLines,
+  parseMarkdown,
+  splitUrlSuffix,
+  stripTrackingParameters,
+  type TextEdit,
+  toUrlPath,
+  urlEdit,
+} from "./markdown.ts";
+import { fixText, scanText } from "./unicode.ts";
 
 export interface BlogChecks {
   readonly metadata: boolean;
@@ -206,10 +208,7 @@ export interface LoadedBlogConfig {
   readonly source?: string;
 }
 
-export async function loadBlogConfig(
-  startDirectory: string,
-  explicit?: string,
-): Promise<LoadedBlogConfig> {
+export async function loadBlogConfig(startDirectory: string, explicit?: string): Promise<LoadedBlogConfig> {
   const candidates = explicit
     ? [resolve(startDirectory, explicit)]
     : [
@@ -224,7 +223,10 @@ export async function loadBlogConfig(
     try {
       parsed = JSON.parse(await Bun.file(path).text());
     } catch (error) {
-      throw new Error(`Cannot parse blog config ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Cannot parse blog config ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
     const result = ConfigFileSchema.safeParse(parsed);
     if (!result.success) {
@@ -254,7 +256,17 @@ export interface BlogProject {
 }
 
 function inferProjectRoot(postRoot: string, config: BlogConfig): string {
-  return basename(dirname(postRoot)) === config.postsDir ? dirname(dirname(postRoot)) : postRoot;
+  const parent = dirname(postRoot);
+  const postsDir = config.postsDir.replace(/[\\/]+$/, "");
+  const nativePostsDir = isAbsolute(postsDir)
+    ? resolve(postsDir)
+    : postsDir.split(/[\\/]/).filter(Boolean).join(sep);
+  if (!nativePostsDir) return postRoot;
+  if (parent === nativePostsDir || parent.endsWith(`${sep}${nativePostsDir}`)) {
+    if (isAbsolute(postsDir)) return dirname(nativePostsDir);
+    return parent.slice(0, parent.length - nativePostsDir.length).replace(/[\\/]+$/, "") || sep;
+  }
+  return postRoot;
 }
 
 function findEntry(directory: string, config: BlogConfig): string | undefined {
@@ -525,7 +537,14 @@ async function checkPost(
 
   const metadata = await loadPostMetadata(post, config);
   for (const error of metadata.errors) {
-    issues.push({ severity: "error", code: "metadata", message: error, file: post.entry, line: 1, column: 1 });
+    issues.push({
+      severity: "error",
+      code: "metadata",
+      message: error,
+      file: post.entry,
+      line: 1,
+      column: 1,
+    });
   }
 
   if (config.checks.metadata) {
@@ -669,6 +688,25 @@ async function checkPost(
     if (seen.has(key)) continue;
     seen.add(key);
 
+    const isImageReference =
+      reference.kind === "image" ||
+      (reference.kind === "jsx" && /\.(?:png|jpe?g|webp|avif|gif|svg)$/i.test(urlPath)) ||
+      (reference.kind === "html" && /\.(?:png|jpe?g|webp|avif|gif|svg)$/i.test(urlPath));
+    if (
+      isImageReference &&
+      config.checks.altText &&
+      (reference.alt === undefined || reference.alt.trim() === "")
+    ) {
+      issues.push({
+        severity: "warn",
+        code: "missing-alt-text",
+        message: `Image is missing alt text: ${reference.url}`,
+        file: post.entry,
+        line: reference.line,
+        column: reference.column,
+      });
+    }
+
     if (!existsSync(absolute)) {
       if (reference.kind === "link" && config.checks.links) {
         issues.push({
@@ -701,23 +739,6 @@ async function checkPost(
           severity: "warn",
           code: "oversized-asset",
           message: `Asset is ${size} bytes (limit ${config.maxAssetBytes}): ${reference.url}`,
-          file: post.entry,
-          line: reference.line,
-          column: reference.column,
-        });
-      }
-    }
-
-    if (
-      reference.kind === "image" ||
-      (reference.kind === "jsx" && /\.(?:png|jpe?g|webp|avif|gif|svg)$/i.test(urlPath)) ||
-      (reference.kind === "html" && /\.(?:png|jpe?g|webp|avif|gif|svg)$/i.test(urlPath))
-    ) {
-      if (config.checks.altText && (reference.alt === undefined || reference.alt.trim() === "")) {
-        issues.push({
-          severity: "warn",
-          code: "missing-alt-text",
-          message: `Image is missing alt text: ${reference.url}`,
           file: post.entry,
           line: reference.line,
           column: reference.column,
@@ -831,6 +852,7 @@ export async function planBlogPrepare(
 ): Promise<PreparePlan> {
   const file = await readTextFile(post.entry);
   const edits: PlannedEdit[] = [];
+  const textEdits: TextEdit[] = [];
   const artifactList = config.prepare.notion ? findNotionArtifacts(file.text) : [];
   const artifacts = artifactEdits(artifactList);
   const source = artifacts.length > 0 ? applyEdits(file.text, artifacts) : file.text;
@@ -884,7 +906,7 @@ export async function planBlogPrepare(
     const image = imageForReference.get(reference);
     if (image) {
       const { suffix } = splitUrlSuffix(reference.url);
-      nextUrl = `${image.nextUrl}${suffix}`;
+      nextUrl = `${imageUrlForReference(reference.url, image, post, config)}${suffix}`;
     }
     let removed: readonly string[] = [];
     if (config.prepare.stripTracking) {
@@ -893,7 +915,7 @@ export async function planBlogPrepare(
       removed = stripped.removed;
     }
     if (nextUrl === reference.url) continue;
-    const edit = urlEdit(file.text, reference, nextUrl);
+    const edit = urlEdit(source, reference, nextUrl);
     if (!edit) continue;
     textEdits.push(edit);
     const reasons: string[] = [];
@@ -911,7 +933,7 @@ export async function planBlogPrepare(
     });
   }
 
-  let text = textEdits.length > 0 ? applyEdits(file.text, textEdits) : file.text;
+  let text = textEdits.length > 0 ? applyEdits(source, textEdits) : source;
   let unicodeReplacements = 0;
   if (config.prepare.fixUnicode && !options.noUnicode) {
     const fixed = fixText(text, { typography: config.prepare.typography });
@@ -945,6 +967,17 @@ export async function planBlogPrepare(
   };
 }
 
+function imageUrlForReference(
+  referenceUrl: string,
+  image: PlannedImage,
+  post: BlogPost,
+  config: BlogConfig,
+): string {
+  if (!referenceUrl.startsWith("/")) return image.nextUrl;
+  const base = config.publicDir ? join(post.projectRoot, config.publicDir) : post.projectRoot;
+  return `/${toUrlPath(relative(base, image.output))}`;
+}
+
 async function planImage(
   input: string,
   post: BlogPost,
@@ -954,6 +987,10 @@ async function planImage(
   const inputExtension = input.split(".").pop()?.toLowerCase() ?? "";
   const requested = config.prepare.imageFormat === "webp" ? "webp" : normalizeFormat(inputExtension);
   if (!requested) return undefined;
+  // Do not create a chain of `-optimized` copies on repeated prepares.
+  const sameFormat =
+    config.prepare.imageFormat === "webp" ? inputExtension === "webp" : requested === inputExtension;
+  if (sameFormat && basename(input, extname(input)).endsWith("-optimized")) return undefined;
 
   const before = await fileSize(input);
   let output: string;
@@ -1040,14 +1077,26 @@ export interface PrepareResult {
 }
 
 export async function applyBlogPrepare(plan: PreparePlan, config: BlogConfig): Promise<PrepareResult> {
+  const file = await readTextFile(plan.entry);
+  if (file.text !== plan.original) {
+    throw new Error(`${plan.entry} changed after planning; re-run blog prepare`);
+  }
+
   const writtenImages: string[] = [];
   for (const image of plan.images) {
+    if (existsSync(image.output)) {
+      const existing = await readFileBytes(image.output);
+      if (existing.equals(image.data)) {
+        writtenImages.push(image.output);
+        continue;
+      }
+      throw new Error(`${image.output} appeared after planning; re-run blog prepare`);
+    }
     await writeFileAtomic(image.output, image.data);
     writtenImages.push(image.output);
   }
 
-  if (plan.prepared !== plan.original) {
-    const file = await readTextFile(plan.entry);
+  if (plan.prepared !== file.text) {
     await writeFileAtomic(plan.entry, encodeTextFile(file, plan.prepared));
   }
 

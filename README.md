@@ -6,7 +6,7 @@ A personal CLI toolkit on [Bun](https://bun.com), [`@bomb.sh/router`](https://bo
 
 ```bash
 bun install
-bun run sv media web cat.png --format avif   # run from source
+bun run sv img web cat.png --format avif    # run from source
 bun link && sv --help                        # or put `sv` on your PATH
 ```
 
@@ -29,14 +29,122 @@ echo 'source <(sv complete zsh)' >> ~/.zshrc
 echo 'source <(sv complete bash)' >> ~/.bashrc
 ```
 
-The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To try completion without installing, define a function in the current shell first: `sv() { bun /path/to/tools/src/main.ts "$@"; }`. To see what the shell sees, run `sv complete -- media web --format ""`.
+The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To try completion without installing, define a function in the current shell first: `sv() { bun /path/to/tools/src/main.ts "$@"; }`. To see what the shell sees, run `sv complete -- img web --format ""`.
+
+## Commands
+
+| Group      | Commands                                 | Purpose                                                        |
+| ---------- | ---------------------------------------- | -------------------------------------------------------------- |
+| `img`      | `web`, `og`, `resize`, `compare`, `info` | WebP conversion, cover optimization, resizing, diffs, metadata |
+| `blog`     | `check`, `prepare`                       | Validate and safely prepare Markdown/MDX posts                 |
+| `video`    | `webm`                                   | Convert video to WebM/VP9                                      |
+| `gremlins` | —                                        | Find and fix invisible or suspicious Unicode                   |
+| `tunnel`   | —                                        | Expose a local port through a Cloudflare Quick Tunnel          |
+| `jwt`      | `decode`, `sign`, `verify`               | Inspect and work with JSON Web Tokens                          |
+| `dev`      | `echo`                                   | Small development helpers                                      |
+
+Every command has `--help` with its options, `--json` where structured output helps, and predictable exit codes: `0` success, `1` runtime failure, `2` usage error. Destructive actions are opt-in and previewed first.
+
+### Images
+
+```bash
+# Convert a batch to WebP, capped at 1600px wide, without overwriting anything.
+sv img web posts/ --width 1600 --quality 82
+
+# Optimize OpenGraph covers. PNG stays PNG unless --format says otherwise.
+sv img og covers/*.png --target 1200x630 --strict
+
+# Resize with aspect-ratio-aware fitting. Upscaling is off by default.
+sv img resize hero.jpg --width 1280 --fit cover
+
+# Compare two builds; exit 1 when more than 0.5% of pixels differ.
+sv img compare before.png after.png --max-diff 0.5
+
+# Inspect dimensions, format, size and animation metadata.
+sv img info cover.png hero.jpg
+```
+
+Existing outputs are never replaced unless you pass `--force`; otherwise the tool picks `name-1.webp`, `name-2.webp`, and so on. `--dry-run` prints the plan without writing. Originals are preserved.
+
+### Blog
+
+`blog` is layout-agnostic. Point it at a project root and describe the layout in `sv.blog.json` (or `.sv/blog.json`, or `blog.config.json`). See [`examples/ens-blog/sv.blog.json`](examples/ens-blog/sv.blog.json) for a complete example.
+
+```bash
+sv blog check posts/ --strict
+sv blog prepare posts/ --dry-run
+sv blog prepare posts/ --yes
+```
+
+`check` validates metadata, local links and media, alt text, slugs, oversized assets, Notion export artifacts, tracking parameters and Unicode. `prepare` previews every edit before writing, removes Notion artifacts, strips tracking parameters, replaces invisible characters, normalizes blank lines, and rewrites referenced images. It never deletes an original unless the config sets `prepare.deleteOriginals: true` (or you pass `--delete-originals`). It never publishes or opens a pull request.
+
+Minimal config:
+
+```json
+{
+  "name": "My blog",
+  "postsDir": "posts",
+  "entries": ["index.md", "index.mdx"],
+  "metadataFiles": ["meta.json"],
+  "requiredMetadata": ["title", "slug"],
+  "slugField": "slug",
+  "prepare": {
+    "imageFormat": "webp",
+    "imageWidth": 1600,
+    "imageQuality": 82
+  }
+}
+```
+
+### Unicode gremlins
+
+```bash
+sv gremlins src/                       # scan, respecting .gitignore
+sv gremlins docs/ --min-severity warn  # only show warnings and errors
+sv gremlins docs/ --fix --dry-run      # preview safe replacements
+sv gremlins docs/ --fix --yes          # apply, preserving encoding and line endings
+```
+
+Scanning and fixing are separate. `--fix` previews first, asks for confirmation on a TTY, and refuses to overwrite a file that changed after the scan. Typography replacements (curly quotes, en dashes) require `--fix-typography`.
+
+### Tunnel
+
+```bash
+sv tunnel 3000
+sv tunnel 8080 --host 127.0.0.1 --copy
+```
+
+`tunnel` prints an exposure warning, starts a Cloudflare Quick Tunnel with `cloudflared`, prints the public URL, and cleans up the child process on Ctrl+C. It does not require a Cloudflare account. Quick Tunnel URLs are temporary and public; do not expose sensitive services.
+
+### Video
+
+```bash
+sv video webm clip.mp4 --width 1920 --crf 32
+sv video webm recordings/ --audio strip --dry-run
+```
+
+`video` requires `ffmpeg` and `ffprobe` on `PATH`. It preserves the aspect ratio, never upscales, keeps audio as Opus unless `--audio strip` is set, and removes partial output files if encoding fails.
+
+### JWT
+
+```bash
+# Decode without a secret; this never verifies the signature.
+sv jwt decode "$TOKEN" --json
+
+# Secrets come from the environment, a file, or stdin — never argv.
+export JWT_SECRET='...'
+sv jwt sign --payload '{"sub":"user-1"}' --secret-env JWT_SECRET --expires-in 1h
+sv jwt verify "$TOKEN" --alg HS256 --secret-env JWT_SECRET --issuer my-app
+```
+
+`verify` requires `--alg` so a token cannot choose its own algorithm. `decode` reports `verified: false`; use `verify` when the signature matters. `--json` is available on all three commands.
 
 ## Adding a command
 
 1. **Define it with Router and attach a handler.** Everything in `command(...)` is plain `@bomb.sh/router`, and the handler's input is inferred from it.
 
    ```ts
-   // src/commands/media/thumb.ts
+   // src/commands/img/thumb.ts
    import { argument, command, description, name, option, schema } from "@bomb.sh/router";
    import { z } from "zod";
 
@@ -58,9 +166,9 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
    );
    ```
 
-To read parent options, export a bundle from its own module, declare `inherit: { media: mediaOptions }`, and read `media` from the handler’s third argument.
+To read parent options, export a bundle from its own module, declare `inherit: { img: imgOptions }`, and read `img` from the handler’s third argument.
 
-2. **Mount it** inside its group, which is again plain Router: `route(name("media"), mediaOptions, web, inspect, thumb)`.
+2. **Mount it** inside its group, which is again plain Router: `route(name("img"), imgOptions, web, og, resize, compare, info, thumb)`.
 
 3. **Run `bun check && bun test`.** If the command can't work where you mounted it, `bun check` fails at `createApp(...)` in `src/app.ts` and names the route. That covers a missing handler, an inherited bundle without an applier, missing context services, duplicate names, a widened route type, and a missing checkpoint driver.
 
@@ -70,7 +178,7 @@ There is nothing else to register: dispatch, help, and completion all come from 
 
 | You want                              | Write                                                                           |
 | ------------------------------------- | ------------------------------------------------------------------------------- |
-| A group that only contains commands   | `route(name("media"), ...children)`; bare `sv media` prints its help            |
+| A group that only contains commands   | `route(name("img"), ...children)`; bare `sv img` prints its help                |
 | A command that also has subcommands   | `defineCommand(command(name("dev"), ...options, ...children), { run })`         |
 | An executable root (`sv` alone)       | `defineCommand(command(name("sv"), ...), { run })`                              |
 | A reusable bundle of options/children | `extend(...)` (Router)                                                          |
@@ -83,31 +191,31 @@ Keep child lists as tuples. A plain `AnyRoute[]` throws away every path and mode
 Router scopes every option to the route that declares it. A command declares the option bundles it reads under local aliases; the handler receives their typed models as its third argument:
 
 ```ts
-// src/commands/media/options.ts — its own module, so children can import it
-export const mediaOptions = extend(option(name("quality"), schema(z.number().int().default(80))));
+// src/commands/img/options.ts — its own module, so children can import it
+export const imgOptions = extend(option(name("quality"), schema(z.number().int().default(80))));
 
-// src/commands/media/web.ts
+// src/commands/img/web.ts
 export const web = defineCommand(
   command(name("web"), option(name("quality"), schema(z.number().optional()))),
   {
-    inherit: { media: mediaOptions },
-    run({ model }, _context, { media }) {
-      const quality = model.quality ?? media.quality; // number | undefined, then number
+    inherit: { img: imgOptions },
+    run({ model }, _context, { img }) {
+      const quality = model.quality ?? img.quality; // number | undefined, then number
     },
   },
 );
 ```
 
-`createApp` checks that a route on the mount path provides a compatible model. Runtime validation requires the exact bundle, by parameter identity. A different bundle with the same shape passes the type check but fails runtime validation. The nearest route applying the bundle wins, including the command itself and root. Namespaces stay separate: `media.quality` and `model.quality` above.
+`createApp` checks that a route on the mount path provides a compatible model. Runtime validation requires the exact bundle, by parameter identity. A different bundle with the same shape passes the type check but fails runtime validation. The nearest route applying the bundle wins, including the command itself and root. Namespaces stay separate: `img.quality` and `model.quality` above.
 
 Commands no longer depend on mount paths: moving a group does not break its children, and handlers do not index models by path strings. Keep parent bundles in their own module to avoid circular imports.
 
 **Option position follows Router.** Parent options go before the child's name:
 
 ```bash
-sv --verbose media --quality 40 web cat.png    # ok
-sv media web cat.png --verbose                 # error: unexpected `--verbose`
-                                               # hint: --verbose is an option of `sv`; put it before `media`
+sv --verbose img --quality 40 web cat.png      # ok
+sv img web cat.png --verbose                   # error: unexpected `--verbose`
+                                               # hint: --verbose is an option of `sv`; put it before `img`
 ```
 
 This was a deliberate choice; see [docs/architecture.md](docs/architecture.md#option-position).
@@ -155,7 +263,7 @@ tab(command, { root, path }) {
 // per app; `command(path)` only accepts route paths of the tree
 createApp(sv, {
   tab({ root, command }) {
-    command("/media/web").options.get("format")!.handler = (add) => add("webp", "");
+    command("/img/web").options.get("format")!.handler = (add) => add("webp", "");
   },
 });
 ```
@@ -176,8 +284,8 @@ All Router elements work inside definitions: `transform()`, `extend()`, `cli()`,
 
 ```ts
 import { runApp } from "../test/support/io.ts";
-const { code, stdout, stderr } = await runApp(app, ["media", "web", "cat.png"]);
-expect(app.complete(["media", "web", "--format", ""]).candidates).toEqual([...]);
+const { code, stdout, stderr } = await runApp(app, ["img", "web", "cat.png"]);
+expect(app.complete(["img", "web", "--format", ""]).candidates).toEqual([...]);
 ```
 
 - `test/app.test.ts`: dispatch, models, scoping, help/version/errors, context, checkpoints, validation

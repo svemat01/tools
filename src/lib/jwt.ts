@@ -6,19 +6,19 @@
  * trusted to choose a key type.
  */
 
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
 import {
-  SignJWT,
   decodeJwt,
   decodeProtectedHeader,
   importPKCS8,
   importSPKI,
-  jwtVerify,
-  type JWTPayload,
   type JWTHeaderParameters,
+  type JWTPayload,
+  jwtVerify,
+  SignJWT,
 } from "jose";
-
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 
 export const JWT_ALGORITHMS = [
   "HS256",
@@ -104,7 +104,10 @@ export async function readSecret(source: SecretSource, options: SecretOptions): 
     try {
       return (await readFile(path, "utf8")).replace(/\r?\n$/, "");
     } catch (error) {
-      throw new Error(`Cannot read secret file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Cannot read secret file ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
   }
   const text = await Bun.stdin.text();
@@ -117,7 +120,8 @@ export function parseDuration(value: string): number {
   if (!match) throw new Error(`Invalid duration ${JSON.stringify(value)}; use e.g. 30s, 15m, 1h, 7d`);
   const amount = Number(match[1]);
   const unit = (match[2] ?? "s").toLowerCase();
-  const multiplier = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : unit === "d" ? 86400 : 604800;
+  const multiplier =
+    unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : unit === "d" ? 86400 : 604800;
   return Math.round(amount * multiplier);
 }
 
@@ -134,6 +138,7 @@ async function signingKey(algorithm: JwtAlgorithm, secret: string): Promise<Cryp
     throw new Error(
       `Cannot import the private key for ${algorithm}: ${error instanceof Error ? error.message : String(error)}. ` +
         "Pass a PKCS#8 PEM key via --secret-file or --secret-env.",
+      { cause: error },
     );
   }
 }
@@ -146,6 +151,7 @@ async function verificationKey(algorithm: JwtAlgorithm, secret: string): Promise
     throw new Error(
       `Cannot import the public key for ${algorithm}: ${error instanceof Error ? error.message : String(error)}. ` +
         "Pass a SubjectPublicKeyInfo PEM key via --secret-file or --secret-env.",
+      { cause: error },
     );
   }
 }

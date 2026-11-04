@@ -2,9 +2,9 @@ import { argument, cli, command, description, name, option, schema, toggle } fro
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
+import { complete, defineCommand, files } from "../../kit/index.ts";
 import { claimState, decodeToken } from "../../lib/jwt.ts";
 import { color, formatDuration, json, useColor } from "../../lib/output.ts";
-import { complete, defineCommand, files } from "../../kit/index.ts";
 import { checkStdin, readToken } from "./input.ts";
 
 function describeTime(seconds: number | undefined): string | undefined {
@@ -18,11 +18,7 @@ export const decode = defineCommand(
   command(
     name("decode"),
     description("Decode a JWT without verifying its signature"),
-    argument(
-      name("token"),
-      description("The JWT to decode"),
-      schema(z.string().optional()),
-    ),
+    argument(name("token"), description("The JWT to decode"), schema(z.string().optional())),
     option(
       name("file"),
       cli(["--file", "-f"]),

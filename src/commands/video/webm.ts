@@ -2,12 +2,12 @@ import { argument, cli, command, description, multiple, name, option, schema, to
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
+import { complete, defineCommand, directories, files } from "../../kit/index.ts";
 import { runBatch, sizeTotals } from "../../lib/batch.ts";
-import { displayPath, discoverFiles } from "../../lib/fs.ts";
+import { discoverFiles, displayPath } from "../../lib/fs.ts";
 import { color, formatBytes, formatSavings, json, plural, useColor } from "../../lib/output.ts";
 import { requireBinary } from "../../lib/process.ts";
-import { VIDEO_EXTENSIONS, convertToWebm, type WebmResult } from "../../lib/video.ts";
-import { complete, defineCommand, directories, files } from "../../kit/index.ts";
+import { convertToWebm, VIDEO_EXTENSIONS, type WebmResult } from "../../lib/video.ts";
 
 export const webm = defineCommand(
   command(
@@ -17,7 +17,7 @@ export const webm = defineCommand(
       name("files"),
       multiple(),
       description("Videos or directories to convert"),
-      schema(z.array(z.string()).min(1)),
+      schema(z.array(z.string()).default([])),
       complete(files({ extensions: [...VIDEO_EXTENSIONS] })),
     ),
     option(
@@ -86,9 +86,13 @@ export const webm = defineCommand(
         extensions: [...VIDEO_EXTENSIONS],
         respectGitIgnore: true,
       });
-      for (const path of discovered.missing) context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
+      for (const path of discovered.missing)
+        context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
       for (const path of discovered.unsupported) {
         context.stderr.write(`unsupported: ${displayPath(context.cwd, path)}\n`);
+      }
+      if (model.out !== undefined && discovered.files.length > 1) {
+        throw new Error("--out can only be used with a single input; use --out-dir for batches");
       }
       if (discovered.files.length === 0) throw new Error("No supported videos found");
 
@@ -100,7 +104,7 @@ export const webm = defineCommand(
             {
               crf: model.crf,
               maxWidth: model.keepSize ? 0 : model.width,
-              ...(model.height === undefined ? {} : { maxHeight: model.height }),
+              ...(model.keepSize || model.height === undefined ? {} : { maxHeight: model.height }),
               audio: model.audio,
               audioBitrate: model.audioBitrate,
             },
@@ -160,13 +164,12 @@ export const webm = defineCommand(
             result.dimensions === undefined
               ? "unchanged"
               : `${result.info.width}×${result.info.height} → ${result.dimensions.width}×${result.dimensions.height}`;
-          const size =
-            result.dryRun
-              ? `${formatBytes(result.before)} → (not encoded)`
-              : `${formatBytes(result.before)} → ${formatBytes(result.after)} (${formatSavings(
-                  result.before,
-                  result.after,
-                )})`;
+          const size = result.dryRun
+            ? `${formatBytes(result.before)} → (not encoded)`
+            : `${formatBytes(result.before)} → ${formatBytes(result.after)} (${formatSavings(
+                result.before,
+                result.after,
+              )})`;
           context.stdout.write(
             `${displayPath(context.cwd, result.input)} → ${displayPath(context.cwd, result.output)}  ` +
               `${size}  ${dimensions}  crf ${model.crf}\n`,

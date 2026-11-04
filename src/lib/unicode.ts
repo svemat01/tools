@@ -16,8 +16,8 @@ import {
   encodeTextFile,
   fileSize,
   readTextFile,
-  writeFileAtomic,
   type TextFile,
+  writeFileAtomic,
 } from "./fs.ts";
 
 export type Severity = "error" | "warn" | "info";
@@ -38,7 +38,13 @@ const rule = (
   category: RuleCategory,
   description: string,
   replacement?: string,
-): UnicodeRule => ({ codePoint, severity, category, description, ...(replacement === undefined ? {} : { replacement }) });
+): UnicodeRule => ({
+  codePoint,
+  severity,
+  category,
+  description,
+  ...(replacement === undefined ? {} : { replacement }),
+});
 
 function buildRules(): ReadonlyMap<number, UnicodeRule> {
   const entries: UnicodeRule[] = [
@@ -234,10 +240,7 @@ export interface ScanPathsOptions {
   readonly signal?: AbortSignal;
 }
 
-export async function scanPaths(
-  paths: readonly string[],
-  options: ScanPathsOptions,
-): Promise<ScanSummary> {
+export async function scanPaths(paths: readonly string[], options: ScanPathsOptions): Promise<ScanSummary> {
   const discovered = await discoverFiles(paths, {
     cwd: options.cwd,
     respectGitIgnore: options.respectGitIgnore ?? true,

@@ -2,20 +2,16 @@ import { argument, cli, command, description, name, option, schema, toggle } fro
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
-import { JWT_ALGORITHMS, claimState, readSecret, verifyJwt } from "../../lib/jwt.ts";
-import { color, formatDuration, json, useColor } from "../../lib/output.ts";
 import { complete, defineCommand, files } from "../../kit/index.ts";
+import { claimState, JWT_ALGORITHMS, readSecret, verifyJwt } from "../../lib/jwt.ts";
+import { color, formatDuration, json, useColor } from "../../lib/output.ts";
 import { checkStdin, readToken, secretSource } from "./input.ts";
 
 export const verify = defineCommand(
   command(
     name("verify"),
     description("Verify a JWT signature and standard claims using an explicit algorithm"),
-    argument(
-      name("token"),
-      description("The JWT to verify"),
-      schema(z.string().optional()),
-    ),
+    argument(name("token"), description("The JWT to verify"), schema(z.string().optional())),
     option(
       name("file"),
       cli(["--file", "-f"]),
@@ -42,7 +38,12 @@ export const verify = defineCommand(
       complete(files()),
     ),
     toggle(name("secretStdin"), description("Read the key from stdin")),
-    option(name("issuer"), cli(["--issuer", "--iss"]), description("Require this iss claim"), schema(z.string().optional())),
+    option(
+      name("issuer"),
+      cli(["--issuer", "--iss"]),
+      description("Require this iss claim"),
+      schema(z.string().optional()),
+    ),
     option(
       name("audience"),
       cli(["--audience", "--aud"]),

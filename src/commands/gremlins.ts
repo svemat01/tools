@@ -1,12 +1,12 @@
-import { argument, command, description, multiple, name, option, schema, toggle } from "@bomb.sh/router";
+import { argument, cli, command, description, multiple, name, option, schema, toggle } from "@bomb.sh/router";
 import { z } from "zod";
 
 import type { AppContext } from "../context.ts";
+import { complete, defineCommand, files } from "../kit/index.ts";
 import { displayPath } from "../lib/fs.ts";
 import { color, formatBytes, json, plural, useColor } from "../lib/output.ts";
 import { confirm } from "../lib/prompt.ts";
-import { fixScans, isFixable, scanPaths, unicodeName, type Severity } from "../lib/unicode.ts";
-import { complete, defineCommand, files } from "../kit/index.ts";
+import { fixScans, isFixable, scanPaths, type Severity, unicodeName } from "../lib/unicode.ts";
 
 const SEVERITY_ORDER: Record<Severity, number> = { info: 0, warn: 1, error: 2 };
 
@@ -24,9 +24,17 @@ export const gremlins = defineCommand(
     toggle(name("fix"), description("Apply safe fixes after previewing the changes")),
     toggle(name("fixTypography"), description("Also replace curly quotes and en dashes with --fix")),
     toggle(name("dryRun"), description("Preview fixes without writing")),
-    toggle(name("yes"), description("Apply fixes without an interactive confirmation")),
+    toggle(
+      name("yes"),
+      description("Apply fixes without an interactive confirmation"),
+      cli(["--yes"], { switch: true }),
+    ),
     toggle(name("includeHidden"), description("Include dot-directories when walking")),
-    toggle(name("noGitignore"), description("Do not use git ls-files for directory scans")),
+    toggle(
+      name("noGitignore"),
+      description("Do not use git ls-files for directory scans"),
+      cli(["--no-gitignore"], { switch: true }),
+    ),
     option(
       name("minSeverity"),
       description("Only display findings at or above this severity"),
@@ -36,7 +44,13 @@ export const gremlins = defineCommand(
     option(
       name("maxBytes"),
       description("Skip files larger than this many bytes"),
-      schema(z.number().int().positive().default(5 * 1024 * 1024)),
+      schema(
+        z
+          .number()
+          .int()
+          .positive()
+          .default(5 * 1024 * 1024),
+      ),
     ),
     toggle(name("json"), description("Print machine-readable JSON")),
   ),
@@ -144,7 +158,11 @@ export const gremlins = defineCommand(
           context.stdout.write(`\n${color(displayPath(context.cwd, file.path), "bold", useColour)}\n`);
           for (const finding of findings) {
             const levelColor =
-              finding.rule.severity === "error" ? "red" : finding.rule.severity === "warn" ? "yellow" : "cyan";
+              finding.rule.severity === "error"
+                ? "red"
+                : finding.rule.severity === "warn"
+                  ? "yellow"
+                  : "cyan";
             const label = color(finding.rule.severity.toUpperCase().padEnd(5), levelColor, useColour);
             const action = isFixable(finding.rule, model.fixTypography)
               ? finding.rule.replacement === ""
@@ -177,7 +195,9 @@ export const gremlins = defineCommand(
 
         if (fixSummary) {
           if (fixSummary.changed.length > 0) {
-            context.stdout.write(`\n${color(model.dryRun ? "Planned fixes" : "Updated files", "bold", useColour)}\n`);
+            context.stdout.write(
+              `\n${color(model.dryRun ? "Planned fixes" : "Updated files", "bold", useColour)}\n`,
+            );
             for (const entry of fixSummary.changed) {
               context.stdout.write(
                 `  ${displayPath(context.cwd, entry.path)}  ${entry.changes} replacement(s)  ` +
@@ -196,7 +216,9 @@ export const gremlins = defineCommand(
         }
         if (applyError) context.stderr.write(`${applyError}\n`);
         if (!model.fix && summary.fixableFindings > 0) {
-          context.stdout.write(`\nRun ${color("sv gremlins <path> --fix", "cyan", useColour)} to apply safe fixes.\n`);
+          context.stdout.write(
+            `\nRun ${color("sv gremlins <path> --fix", "cyan", useColour)} to apply safe fixes.\n`,
+          );
         }
         if (remaining > 0 && model.fix) {
           context.stdout.write(`${remaining} finding(s) remain for manual review.\n`);

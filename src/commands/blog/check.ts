@@ -2,15 +2,10 @@ import { argument, command, description, multiple, name, option, schema, toggle 
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
-import {
-  checkBlog,
-  loadBlogConfig,
-  resolveBlogProject,
-  type BlogIssue,
-} from "../../lib/blog.ts";
-import { displayPath } from "../../lib/fs.ts";
-import { color, json, plural, useColor, type ColorName } from "../../lib/output.ts";
 import { complete, defineCommand, directories } from "../../kit/index.ts";
+import { type BlogIssue, checkBlog, loadBlogConfig, resolveBlogProject } from "../../lib/blog.ts";
+import { displayPath } from "../../lib/fs.ts";
+import { color, type ColorName, json, plural, useColor } from "../../lib/output.ts";
 
 const SEVERITY_COLOUR: Record<BlogIssue["severity"], ColorName> = {
   error: "red",
@@ -76,15 +71,15 @@ export const check = defineCommand(
       }
 
       if (posts === 0) {
-        context.stderr.write("No blog posts found. Check --config, the target path and the postsDir setting.\n");
+        context.stderr.write(
+          "No blog posts found. Check --config, the target path and the postsDir setting.\n",
+        );
         return 1;
       }
 
       const sorted = [...issues].sort(
         (a, b) =>
-          a.file.localeCompare(b.file) ||
-          (a.line ?? 0) - (b.line ?? 0) ||
-          (a.column ?? 0) - (b.column ?? 0),
+          a.file.localeCompare(b.file) || (a.line ?? 0) - (b.line ?? 0) || (a.column ?? 0) - (b.column ?? 0),
       );
 
       if (model.json) {
@@ -122,7 +117,11 @@ export const check = defineCommand(
             context.stdout.write(`\n${color(file, "bold", useColour)}\n`);
           }
           const location = `${issue.line ?? 1}:${issue.column ?? 1}`.padEnd(9);
-          const severity = color(SEVERITY_LABEL[issue.severity].padEnd(5), SEVERITY_COLOUR[issue.severity], useColour);
+          const severity = color(
+            SEVERITY_LABEL[issue.severity].padEnd(5),
+            SEVERITY_COLOUR[issue.severity],
+            useColour,
+          );
           context.stdout.write(`  ${severity} ${location} ${issue.code}  ${issue.message}\n`);
         }
 

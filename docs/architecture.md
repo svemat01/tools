@@ -20,10 +20,10 @@ A handler needs three things typed: its own model, its ancestors' models, and th
 
 Options considered:
 
-1. **Handlers keyed by path at the app** (`createApp(root, { "/media/web": handler })`). This gives perfect types from Router's `IntentsOf`, but every command is registered twice (route and path) and handlers live away from their definitions.
+1. **Handlers keyed by path at the app** (`createApp(root, { "/img/web": handler })`). This gives perfect types from Router's `IntentsOf`, but every command is registered twice (route and path) and handlers live away from their definitions.
 2. **A handler as a Router element** (`command(name("x"), ..., run(fn))`). It's native-looking, but TypeScript can't contextually type `fn` from the elements before it in a variadic call, so the handler would be untyped.
 3. **Implicit ancestor context.** A merged object of every ancestor's options. It flattens namespaces (collisions), and a module can't know what it'll get. It's either unsafe or needs global type registration.
-4. **Declare bundles, resolve by identity, verify at createApp (chosen).** `defineCommand(command(...), { inherit, run })` infers the own model from the definition. Commands declare option bundles under local aliases (`inherit: { media: mediaOptions }`) and receive their typed models as the handler's third argument. Runtime resolution finds the nearest route on the invoked path that applied the exact bundle, by parameter identity. `createApp(root)` checks that a model on the mount path is assignable to each bundle's model and verifies the application context. A different bundle with the same shape passes the type check but fails runtime validation.
+4. **Declare bundles, resolve by identity, verify at createApp (chosen).** `defineCommand(command(...), { inherit, run })` infers the own model from the definition. Commands declare option bundles under local aliases (`inherit: { img: imgOptions }`) and receive their typed models as the handler's third argument. Runtime resolution finds the nearest route on the invoked path that applied the exact bundle, by parameter identity. `createApp(root)` checks that a model on the mount path is assignable to each bundle's model and verifies the application context. A different bundle with the same shape passes the type check but fails runtime validation.
 
 Option 4 keeps commands self-contained and preserves Router's per-route namespaces. Bundles decouple commands from mount paths: moving a group does not break its children, and handlers do not index by path strings. Missing or incompatible models fail at `createApp` with a message naming the path.
 
@@ -42,17 +42,17 @@ The context is a separate channel from models. `BaseContext` holds process facil
 Router binds each option to the route segment it appears in: tokens before a child's name belong to the parent, tokens after belong to the child. The kit keeps this:
 
 ```bash
-sv --verbose media web x.png    # ok
-sv media web x.png --verbose    # unexpected `--verbose` (with a hint naming where it belongs)
+sv --verbose img web x.png      # ok
+sv img web x.png --verbose      # unexpected `--verbose` (with a hint naming where it belongs)
 ```
 
 Reasons:
 
-- It makes same-named options at different levels unambiguous (`sv media --quality 40 web --quality 90`). Global flags "after the leaf" would have to steal tokens from the child, which is ambiguous exactly when the child declares the same name.
+- It makes same-named options at different levels unambiguous (`sv img --quality 40 web --quality 90`). Global flags "after the leaf" would have to steal tokens from the child, which is ambiguous exactly when the child declares the same name.
 - Reordering argv before Router sees it would also have to understand option values, `--name=value`, `--` and custom `cli()` readers, which is a second parser that can disagree with Router.
 - Tab completes flags for the matched command only, which is the same model.
 
-The usability cost is softened by the error hint (`hint: --verbose is an option of \`sv\`; put it before \`media\``). If a truly global flag is ever needed, the principled alternative is an environment variable through `createApp({ sources })`, not argv rewriting.
+The usability cost is softened by the error hint (`hint: --verbose is an option of \`sv\`; put it before \`img\``). If a truly global flag is ever needed, the principled alternative is an environment variable through `createApp({ sources })`, not argv rewriting.
 
 ## Router integration points
 
@@ -68,7 +68,7 @@ Runtime contracts the kit relies on, all pinned in `test/router-meta.test.ts`:
 
 ## Tab integration
 
-For every static route the kit creates a native Tab command (`root.command("media web", description)`, Tab's convention for nesting) and registers:
+For every static route the kit creates a native Tab command (`root.command("img web", description)`, Tab's convention for nesting) and registers:
 
 | Router                                | Tab                                                                      |
 | ------------------------------------- | ------------------------------------------------------------------------ |

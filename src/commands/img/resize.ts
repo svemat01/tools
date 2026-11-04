@@ -2,18 +2,18 @@ import { argument, cli, command, description, multiple, name, option, schema, to
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
+import { complete, defineCommand, directories, files } from "../../kit/index.ts";
 import { runBatch, sizeTotals } from "../../lib/batch.ts";
-import { displayPath, discoverFiles, planOutputPath, writeFileAtomic } from "../../lib/fs.ts";
+import { discoverFiles, displayPath, planOutputPath, writeFileAtomic } from "../../lib/fs.ts";
 import {
-  IMAGE_EXTENSIONS,
   extensionForFormat,
+  type Fit,
+  IMAGE_EXTENSIONS,
   inspectImage,
   normalizeFormat,
   transformImage,
-  type Fit,
 } from "../../lib/image.ts";
 import { color, formatBytes, formatSavings, json, useColor } from "../../lib/output.ts";
-import { complete, defineCommand, directories, files } from "../../kit/index.ts";
 
 interface ResizeResult {
   readonly input: string;
@@ -32,7 +32,7 @@ export const resize = defineCommand(
       name("files"),
       multiple(),
       description("Images or directories to resize"),
-      schema(z.array(z.string()).min(1)),
+      schema(z.array(z.string()).default([])),
       complete(files({ extensions: IMAGE_EXTENSIONS })),
     ),
     option(
@@ -109,15 +109,20 @@ export const resize = defineCommand(
         throw new Error("Use either --out or --out-dir, not both");
       }
 
-      const suffix = model.suffix ?? (model.out === undefined && model.outDir === undefined ? "_resized" : "");
+      const suffix =
+        model.suffix ?? (model.out === undefined && model.outDir === undefined ? "_resized" : "");
       const discovered = await discoverFiles(model.files, {
         cwd: context.cwd,
         extensions: IMAGE_EXTENSIONS,
         respectGitIgnore: true,
       });
-      for (const path of discovered.missing) context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
+      for (const path of discovered.missing)
+        context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
       for (const path of discovered.unsupported) {
         context.stderr.write(`unsupported: ${displayPath(context.cwd, path)}\n`);
+      }
+      if (model.out !== undefined && discovered.files.length > 1) {
+        throw new Error("--out can only be used with a single input; use --out-dir for batches");
       }
       if (discovered.files.length === 0) throw new Error("No supported images found");
 

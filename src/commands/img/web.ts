@@ -2,22 +2,17 @@ import { argument, cli, command, description, multiple, name, option, schema, to
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
+import { complete, defineCommand, directories, files } from "../../kit/index.ts";
 import { runBatch, sizeTotals } from "../../lib/batch.ts";
+import { discoverFiles, displayPath, planOutputPath, readFileBytes, writeFileAtomic } from "../../lib/fs.ts";
 import {
-  displayPath,
-  discoverFiles,
-  planOutputPath,
-  writeFileAtomic,
-} from "../../lib/fs.ts";
-import {
-  IMAGE_EXTENSIONS,
   extensionForFormat,
+  IMAGE_EXTENSIONS,
   inspectImage,
   normalizeFormat,
   transformImage,
 } from "../../lib/image.ts";
 import { color, formatBytes, formatSavings, json, plural, useColor } from "../../lib/output.ts";
-import { complete, defineCommand, directories, files } from "../../kit/index.ts";
 
 interface WebResult {
   readonly input: string;
@@ -37,7 +32,7 @@ export const web = defineCommand(
       name("files"),
       multiple(),
       description("Images or directories to process"),
-      schema(z.array(z.string()).min(1)),
+      schema(z.array(z.string()).default([])),
       complete(files({ extensions: IMAGE_EXTENSIONS })),
     ),
     option(
@@ -93,9 +88,13 @@ export const web = defineCommand(
         extensions: IMAGE_EXTENSIONS,
         respectGitIgnore: true,
       });
-      for (const path of discovered.missing) context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
+      for (const path of discovered.missing)
+        context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
       for (const path of discovered.unsupported) {
         context.stderr.write(`unsupported: ${displayPath(context.cwd, path)}\n`);
+      }
+      if (model.out !== undefined && discovered.files.length > 1) {
+        throw new Error("--out can only be used with a single input; use --out-dir for batches");
       }
       if (discovered.files.length === 0) {
         throw new Error("No supported images found");
@@ -110,7 +109,8 @@ export const web = defineCommand(
           const sourceFormat = normalizeFormat(info.format);
           const needsResize = !model.keepSize && info.width > model.width;
           const needsReencode = sourceFormat !== format;
-          if (!needsResize && !needsReencode && !model.force) {
+          const explicitOutput = model.out !== undefined || model.outDir !== undefined;
+          if (!needsResize && !needsReencode && !model.force && !explicitOutput) {
             return {
               input,
               output: input,
@@ -130,6 +130,20 @@ export const web = defineCommand(
             ...(model.out === undefined ? {} : { out: model.out }),
             ...(model.outDir === undefined ? {} : { outDir: model.outDir }),
           });
+          if (!needsResize && !needsReencode) {
+            // Already in the target format: copy the bytes rather than
+            // re-encoding and losing quality.
+            if (!model.dryRun) await writeFileAtomic(output, await readFileBytes(input));
+            return {
+              input,
+              output,
+              before: info.bytes,
+              after: info.bytes,
+              width: info.width,
+              height: info.height,
+              skipped: false,
+            };
+          }
           const result = await transformImage(input, {
             ...(model.keepSize ? {} : { resize: { width: model.width, withoutEnlargement: true } }),
             encode: { format, quality: model.quality },

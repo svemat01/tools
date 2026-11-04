@@ -20,7 +20,10 @@ export interface CommandResult {
   readonly args: readonly string[];
 }
 
-export function findBinary(name: string, env: Readonly<Record<string, string | undefined>> = {}): string | undefined {
+export function findBinary(
+  name: string,
+  env: Readonly<Record<string, string | undefined>> = {},
+): string | undefined {
   const path = env.PATH ?? process.env.PATH;
   const found = Bun.which(name, path === undefined ? {} : { PATH: path });
   return found ?? undefined;

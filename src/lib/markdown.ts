@@ -6,14 +6,14 @@
  * applied from the end, which preserves everything the edit does not target.
  */
 
-import { parse as parseYaml } from "yaml";
 import remarkFrontmatter from "remark-frontmatter";
 import remarkGfm from "remark-gfm";
 import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
-import { visit } from "unist-util-visit";
 import type { Node } from "unist";
+import { visit } from "unist-util-visit";
+import { parse as parseYaml } from "yaml";
 
 export interface MarkdownReference {
   readonly kind: "image" | "link" | "definition" | "html" | "jsx";
@@ -148,7 +148,9 @@ export function extractFrontmatter(source: string): FrontmatterResult {
   try {
     data = parseYaml(raw);
   } catch (error) {
-    throw new Error(`Invalid YAML frontmatter: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Invalid YAML frontmatter: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
   }
   if (data === null || data === undefined) return { data: {}, body: source.slice(match[0].length), raw };
   if (!isRecord(data)) throw new Error("YAML frontmatter must be an object");
@@ -179,17 +181,58 @@ export function applyEdits(source: string, edits: readonly TextEdit[]): string {
   return output;
 }
 
-/** Replace an exact URL inside a node, preserving the rest of the node. */
-export function urlEdit(source: string, reference: MarkdownReference, replacement: string): TextEdit | undefined {
+/** Replace the URL inside a node, preserving alt text and the rest of the node. */
+export function urlEdit(
+  source: string,
+  reference: MarkdownReference,
+  replacement: string,
+): TextEdit | undefined {
   if (reference.url === replacement) return undefined;
   const raw = source.slice(reference.nodeStart, reference.nodeEnd);
-  if (!raw.includes(reference.url)) return undefined;
+  const offset = urlOffsetInRaw(raw, reference);
+  if (offset === -1) return undefined;
+  const start = reference.nodeStart + offset;
   return {
-    start: reference.nodeStart,
-    end: reference.nodeEnd,
-    replacement: raw.split(reference.url).join(replacement),
+    start,
+    end: start + reference.url.length,
+    replacement,
     reason: `rewrite ${reference.url} → ${replacement}`,
   };
+}
+
+function urlOffsetInRaw(raw: string, reference: MarkdownReference): number {
+  const url = reference.url;
+  if (!raw.includes(url)) return -1;
+  const matchesAt = (index: number) => raw.slice(index, index + url.length) === url;
+
+  if (reference.kind === "image" || reference.kind === "link") {
+    const marker = raw.indexOf("](");
+    if (marker !== -1) {
+      const start = marker + 2;
+      if (matchesAt(start)) return start;
+      if (raw[start] === "<" && matchesAt(start + 1)) return start + 1;
+    }
+  }
+
+  if (reference.kind === "definition") {
+    const marker = raw.indexOf("]:");
+    if (marker !== -1) {
+      let start = marker + 2;
+      while (start < raw.length && /\s/.test(raw[start] ?? "")) start++;
+      if (raw[start] === "<") start++;
+      if (matchesAt(start)) return start;
+    }
+  }
+
+  if (reference.kind === "html" || reference.kind === "jsx") {
+    const attribute = /(?:^|\s)(?:src|href)\s*=\s*(?:"|')?/i.exec(raw);
+    if (attribute) {
+      const start = attribute.index + attribute[0].length;
+      if (matchesAt(start)) return start;
+    }
+  }
+
+  return raw.lastIndexOf(url);
 }
 
 const TRACKING_PARAMETERS = new Set([
@@ -333,7 +376,10 @@ export function normalizeBlankLines(source: string): NormalizeResult {
   // Drop trailing blank lines, then add one line ending.
   while (output.length > 0 && (output.at(-1)?.text.trim() ?? "") === "") output.pop();
   const ending = dominantEnding(lines);
-  const text = `${output.map((line) => line.text + line.ending).join("").replace(/(?:\r\n|\n|\r)+$/, "")}${ending}`;
+  const text = `${output
+    .map((line) => line.text + line.ending)
+    .join("")
+    .replace(/(?:\r\n|\n|\r)+$/, "")}${ending}`;
   return { text, changed: text !== source, collapsedBlankLines: collapsed };
 }
 

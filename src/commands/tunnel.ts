@@ -2,10 +2,10 @@ import { argument, command, description, name, option, schema, toggle } from "@b
 import { z } from "zod";
 
 import type { AppContext } from "../context.ts";
-import { copyToClipboard } from "../lib/clipboard.ts";
-import { startTunnel } from "../lib/tunnel.ts";
-import { color, useColor } from "../lib/output.ts";
 import { defineCommand } from "../kit/index.ts";
+import { copyToClipboard } from "../lib/clipboard.ts";
+import { color, useColor } from "../lib/output.ts";
+import { startTunnel } from "../lib/tunnel.ts";
 
 export const tunnel = defineCommand(
   command(

@@ -2,10 +2,10 @@ import { argument, command, description, multiple, name, schema, toggle } from "
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
-import { displayPath, resolvePath } from "../../lib/fs.ts";
-import { IMAGE_EXTENSIONS, formatDimensions, inspectImage, type ImageInfo } from "../../lib/image.ts";
-import { color, formatBytes, json, useColor } from "../../lib/output.ts";
 import { complete, defineCommand, files } from "../../kit/index.ts";
+import { displayPath, resolvePath } from "../../lib/fs.ts";
+import { formatDimensions, IMAGE_EXTENSIONS, type ImageInfo, inspectImage } from "../../lib/image.ts";
+import { color, formatBytes, json, useColor } from "../../lib/output.ts";
 
 export const info = defineCommand(
   command(
@@ -15,13 +15,14 @@ export const info = defineCommand(
       name("files"),
       multiple(),
       description("Images to inspect"),
-      schema(z.array(z.string()).min(1)),
+      schema(z.array(z.string()).default([])),
       complete(files({ extensions: IMAGE_EXTENSIONS })),
     ),
     toggle(name("json"), description("Print machine-readable JSON")),
   ),
   {
     async run({ model }, context: AppContext) {
+      if (model.files.length === 0) throw new Error("Provide at least one image to inspect");
       const results: { readonly info: ImageInfo; readonly display: string }[] = [];
       const failures: { readonly path: string; readonly error: string }[] = [];
 
@@ -72,7 +73,8 @@ export const info = defineCommand(
           context.stdout.write(`  format:     ${value.format}\n`);
           context.stdout.write(`  dimensions: ${formatDimensions(value.width, value.height)}\n`);
           context.stdout.write(`  file size:  ${formatBytes(value.bytes)} (${value.bytes} bytes)\n`);
-          if (value.space) context.stdout.write(`  colour:     ${value.space}${value.hasAlpha ? " + alpha" : ""}\n`);
+          if (value.space)
+            context.stdout.write(`  colour:     ${value.space}${value.hasAlpha ? " + alpha" : ""}\n`);
           if (value.channels !== undefined) context.stdout.write(`  channels:   ${value.channels}\n`);
           if (value.density !== undefined) context.stdout.write(`  density:    ${value.density} dpi\n`);
           if (value.orientation !== undefined) context.stdout.write(`  orientation: ${value.orientation}\n`);

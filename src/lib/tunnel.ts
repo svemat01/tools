@@ -6,8 +6,8 @@
  * module so Ctrl+C and errors always clean it up.
  */
 
-import { findBinary } from "./process.ts";
 import type { Output } from "../kit/index.ts";
+import { findBinary } from "./process.ts";
 
 export const TUNNEL_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
 

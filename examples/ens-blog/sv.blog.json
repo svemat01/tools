@@ -1,0 +1,34 @@
+{
+  "name": "ENS Blog",
+  "postsDir": "posts",
+  "entries": ["readme.mdx", "README.mdx", "index.mdx", "index.md", "readme.md"],
+  "metadataFiles": ["meta.json"],
+  "requiredMetadata": ["title", "slug"],
+  "slugField": "slug",
+  "slugPattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+  "coverFields": ["cover", "image"],
+  "maxAssetBytes": 2097152,
+  "ignore": ["drafts", "node_modules"],
+  "checks": {
+    "metadata": true,
+    "media": true,
+    "links": true,
+    "altText": true,
+    "unicode": true,
+    "slugs": true,
+    "markdown": true,
+    "oversizedAssets": true
+  },
+  "prepare": {
+    "notion": true,
+    "normalizeMarkdown": true,
+    "stripTracking": true,
+    "fixUnicode": true,
+    "typography": false,
+    "optimizeImages": true,
+    "imageFormat": "webp",
+    "imageWidth": 1600,
+    "imageQuality": 82,
+    "deleteOriginals": false
+  }
+}

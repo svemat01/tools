@@ -1,18 +1,18 @@
-import { argument, command, description, multiple, name, option, schema, toggle } from "@bomb.sh/router";
+import { argument, cli, command, description, multiple, name, option, schema, toggle } from "@bomb.sh/router";
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
+import { complete, defineCommand, directories } from "../../kit/index.ts";
 import {
   applyBlogPrepare,
   loadBlogConfig,
   planBlogPrepare,
-  resolveBlogProject,
   type PreparePlan,
+  resolveBlogProject,
 } from "../../lib/blog.ts";
 import { displayPath } from "../../lib/fs.ts";
 import { color, formatBytes, formatSavings, json, plural, useColor } from "../../lib/output.ts";
 import { confirm } from "../../lib/prompt.ts";
-import { complete, defineCommand, directories } from "../../kit/index.ts";
 
 interface Failure {
   readonly entry: string;
@@ -22,7 +22,9 @@ interface Failure {
 export const prepare = defineCommand(
   command(
     name("prepare"),
-    description("Preview and apply safe blog fixes: Notion artifacts, tracking parameters, images and Unicode"),
+    description(
+      "Preview and apply safe blog fixes: Notion artifacts, tracking parameters, images and Unicode",
+    ),
     argument(
       name("paths"),
       multiple(),
@@ -37,12 +39,25 @@ export const prepare = defineCommand(
       complete([{ value: "sv.blog.json", description: "Default config file" }]),
     ),
     toggle(name("dryRun"), description("Preview every change without writing anything")),
-    toggle(name("yes"), description("Apply without an interactive confirmation (required when not a TTY)")),
-    toggle(name("noImages"), description("Do not optimize or rewrite referenced images")),
-    toggle(name("noUnicode"), description("Do not replace invisible or typographic characters")),
+    toggle(
+      name("yes"),
+      description("Apply without an interactive confirmation (required when not a TTY)"),
+      cli(["--yes"], { switch: true }),
+    ),
+    toggle(
+      name("noImages"),
+      description("Do not optimize or rewrite referenced images"),
+      cli(["--no-images"], { switch: true }),
+    ),
+    toggle(
+      name("noUnicode"),
+      description("Do not replace invisible or typographic characters"),
+      cli(["--no-unicode"], { switch: true }),
+    ),
     toggle(
       name("deleteOriginals"),
       description("Delete replaced image originals after a successful write (explicit opt-in)"),
+      cli(["--delete-originals"], { switch: true }),
     ),
     toggle(name("json"), description("Print machine-readable JSON")),
   ),
@@ -60,7 +75,9 @@ export const prepare = defineCommand(
       for (const target of targets) {
         const project = await resolveBlogProject(target, context.cwd, config);
         if (project.posts.length === 0) {
-          context.stderr.write(`No blog posts found under ${target}. Check --config and the postsDir setting.\n`);
+          context.stderr.write(
+            `No blog posts found under ${target}. Check --config and the postsDir setting.\n`,
+          );
           return 1;
         }
         for (const post of project.posts) {
@@ -128,9 +145,7 @@ export const prepare = defineCommand(
       }
 
       const applied =
-        model.dryRun === true
-          ? []
-          : await Promise.all(changed.map((plan) => applyBlogPrepare(plan, config)));
+        model.dryRun === true ? [] : await Promise.all(changed.map((plan) => applyBlogPrepare(plan, config)));
 
       if (model.json) {
         context.stdout.write(

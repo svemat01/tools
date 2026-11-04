@@ -51,7 +51,10 @@ export function parseProbeOutput(text: string): VideoInfo {
   try {
     parsed = JSON.parse(text) as ProbeOutput;
   } catch (error) {
-    throw new Error(`ffprobe returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `ffprobe returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
   const streams = parsed.streams ?? [];
   const video = streams.find((stream) => stream.codec_type === "video");
@@ -231,7 +234,11 @@ export async function convertToWebm(
   output: WebmOutputOptions,
   runOptions: { readonly signal?: AbortSignal; readonly dryRun?: boolean } = {},
 ): Promise<WebmResult> {
-  const ffmpeg = requireBinary("ffmpeg", env, "Install it with `brew install ffmpeg` or `apt install ffmpeg`.");
+  const ffmpeg = requireBinary(
+    "ffmpeg",
+    env,
+    "Install it with `brew install ffmpeg` or `apt install ffmpeg`.",
+  );
   const ffprobe = requireBinary("ffprobe", env, "It ships with FFmpeg; install FFmpeg first.");
   const plan = await planWebm(input, options, ffprobe, output, runOptions.signal);
   const before = await fileSize(input);

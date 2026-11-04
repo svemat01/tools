@@ -49,9 +49,10 @@ export async function runBatch<I, R>(
 }
 
 /** Totals used by the shared media summary. */
-export function sizeTotals(
-  results: readonly { readonly before: number; readonly after: number }[],
-): { readonly before: number; readonly after: number } {
+export function sizeTotals(results: readonly { readonly before: number; readonly after: number }[]): {
+  readonly before: number;
+  readonly after: number;
+} {
   let before = 0;
   let after = 0;
   for (const result of results) {

@@ -48,7 +48,10 @@ export async function readToken(input: TokenInput, context: AppContext): Promise
       if (!token) throw new Error("the file is empty");
       return token;
     } catch (error) {
-      throw new Error(`Cannot read token file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Cannot read token file ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
   }
 
@@ -98,7 +101,10 @@ export async function readPayload(
     try {
       text = await readFile(path, "utf8");
     } catch (error) {
-      throw new Error(`Cannot read payload file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Cannot read payload file ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
   } else {
     text = await Bun.stdin.text();
@@ -109,7 +115,9 @@ export async function readPayload(
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    throw new Error(`Payload is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Payload is not valid JSON: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("Payload must be a JSON object");
@@ -125,6 +133,8 @@ export function checkStdin(input: {
 }): void {
   const uses = [input.tokenStdin, input.secretStdin, input.payloadStdin].filter(Boolean).length;
   if (uses > 1) {
-    throw new Error("Only one value can be read from stdin; use a file or environment variable for the others");
+    throw new Error(
+      "Only one value can be read from stdin; use a file or environment variable for the others",
+    );
   }
 }

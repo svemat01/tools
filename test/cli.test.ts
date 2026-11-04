@@ -8,12 +8,12 @@ import pkg from "../package.json" with { type: "json" };
 
 const main = join(import.meta.dir, "..", "src", "main.ts");
 
-async function sv(args: readonly string[], options: { cwd?: string } = {}) {
+async function sv(args: readonly string[], options: { cwd?: string; env?: Record<string, string> } = {}) {
   const child = Bun.spawn([process.execPath, main, ...args], {
     cwd: options.cwd ?? join(import.meta.dir, ".."),
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, NO_COLOR: "1" },
+    env: { ...process.env, NO_COLOR: "1", ...options.env },
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
@@ -23,52 +23,75 @@ async function sv(args: readonly string[], options: { cwd?: string } = {}) {
   return { code, stdout, stderr };
 }
 
+// A signature is irrelevant for `decode`; it only needs three valid segments.
+const TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjbGkifQ.97Hz4R7uksaLZcEeFO3Z9yvlKKYv9aPp-oXW98ZCe_g";
+
 describe("sv", () => {
   test("bare sv prints an overview", async () => {
     const result = await sv([]);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain(`sv ${pkg.version}`);
-    expect(result.stdout).toContain("media");
-    expect(result.stdout).toContain("dev");
+    for (const group of ["img", "blog", "video", "gremlins", "tunnel", "jwt", "dev"]) {
+      expect(result.stdout).toContain(group);
+    }
   });
 
   test("--version", async () => {
     expect(await sv(["--version"])).toEqual({ code: 0, stdout: `sv ${pkg.version}\n`, stderr: "" });
   });
 
-  test("nested command with parent and child options of the same name", async () => {
-    const group = await sv(["media", "--quality", "40", "web", "cat.png"]);
-    expect(group).toEqual({
-      code: 0,
-      stdout: "would convert cat.png -> cat.webp (webp, quality 40)\n",
-      stderr: "",
-    });
-    const own = await sv([
-      "media",
-      "--quality",
-      "40",
-      "web",
-      "cat.png",
-      "--quality",
-      "90",
-      "--format",
-      "avif",
-    ]);
-    expect(own.stdout).toBe("would convert cat.png -> cat.avif (avif, quality 90)\n");
+  test("groups list their commands", async () => {
+    const img = await sv(["img", "--help"]);
+    expect(img.code).toBe(0);
+    for (const name of ["web", "og", "resize", "compare", "info"]) expect(img.stdout).toContain(name);
+
+    const blog = await sv(["blog", "check", "--help"]);
+    expect(blog.code).toBe(0);
+    expect(blog.stdout).toContain("--config");
+    expect(blog.stdout).toContain("--strict");
+
+    const jwt = await sv(["jwt", "verify", "--help"]);
+    expect(jwt.code).toBe(0);
+    expect(jwt.stdout).toContain("--alg");
   });
 
-  test("root options configure the application context", async () => {
-    const result = await sv(["--verbose", "media", "web", "cat.png", "-o", "out.webp"]);
+  test("jwt decode never verifies and reports claims", async () => {
+    const result = await sv(["jwt", "decode", TOKEN, "--json"]);
     expect(result.code).toBe(0);
-    expect(result.stderr).toBe("debug: quality 80 from sv media --quality\n");
-    expect(result.stdout).toBe("would convert cat.png -> out.webp (webp, quality 80)\n");
+    expect(result.stderr).toBe("");
+    const decoded = JSON.parse(result.stdout) as {
+      verified: boolean;
+      payload: { sub: string };
+      header: { alg: string };
+    };
+    expect(decoded.verified).toBe(false);
+    expect(decoded.header.alg).toBe("HS256");
+    expect(decoded.payload.sub).toBe("cli");
   });
 
-  test("--cwd changes where commands resolve paths", async () => {
-    const result = await sv(["--cwd", "src", "media", "inspect", "main.ts", "missing.ts"]);
+  test("jwt verify requires an explicit algorithm", async () => {
+    const result = await sv(["jwt", "verify", TOKEN, "--secret-env", "JWT_SECRET"], {
+      env: { JWT_SECRET: "this-is-a-test-secret-value" },
+    });
     expect(result.code).toBe(1);
-    expect(result.stdout).toMatch(/^main\.ts\t\d+ bytes\n$/);
-    expect(result.stderr).toBe("missing.ts: not found\n");
+    expect(result.stderr).toContain("Provide --alg explicitly");
+  });
+
+  test("jwt sign and verify round-trip", async () => {
+    const secret = "this-is-a-test-secret-value";
+    const signed = await sv(
+      ["jwt", "sign", "--payload", '{"sub":"roundtrip"}', "--secret-env", "JWT_SECRET", "--json"],
+      { env: { JWT_SECRET: secret } },
+    );
+    expect(signed.code).toBe(0);
+    const token = (JSON.parse(signed.stdout) as { token: string }).token;
+
+    const verified = await sv(
+      ["jwt", "verify", token, "--alg", "HS256", "--secret-env", "JWT_SECRET", "--json"],
+      { env: { JWT_SECRET: secret } },
+    );
+    expect(verified.code).toBe(0);
+    expect(JSON.parse(verified.stdout)).toMatchObject({ valid: true, payload: { sub: "roundtrip" } });
   });
 
   test("executable group and its child", async () => {
@@ -84,31 +107,24 @@ describe("sv", () => {
   });
 
   test("usage errors exit with 2 and explain themselves", async () => {
-    const misplaced = await sv(["media", "web", "cat.png", "--verbose"]);
+    const misplaced = await sv(["img", "web", "--verbose"]);
     expect(misplaced.code).toBe(2);
-    expect(misplaced.stderr).toBe(
-      "unexpected: `--verbose`\nhint: --verbose is an option of `sv`; put it before `media`\nRun `sv media web --help` for usage.\n",
-    );
-    const invalid = await sv(["media", "--quality", "500", "web", "x.png"]);
-    expect(invalid.code).toBe(2);
-    expect(invalid.stderr).toContain("quality:");
-    const group = await sv(["media"]);
+    expect(misplaced.stderr).toContain("unexpected: `--verbose`");
+    expect(misplaced.stderr).toContain("hint: --verbose is an option of `sv`; put it before `img`");
+    expect(misplaced.stderr).toContain("Run `sv img web --help` for usage.");
+
+    const group = await sv(["img"]);
     expect(group.code).toBe(2);
     expect(group.stderr).toContain("Commands:\n  web");
   });
 
   test("completion protocol", async () => {
-    expect(await sv(["complete", "--", "media", ""])).toEqual({
-      code: 0,
-      stdout:
-        "web\tConvert an image for the web (stub: prints the plan)\ninspect\tPrint the size of one or more files\n:4\n",
-      stderr: "",
-    });
-    expect((await sv(["complete", "--", "media", "web", "--format", ""])).stdout).toBe(
-      "webp\tBroad support\navif\tSmaller, slower to encode\n:4\n",
+    expect((await sv(["complete", "--", "img", ""])).stdout).toContain(
+      "web\tConvert images to WebP for the web, resizing to a maximum width",
     );
-    expect((await sv(["complete", "--", "media", "web", ""])).stdout).toBe(
-      "png\njpg\njpeg\ngif\nwebp\navif\n:8\n",
+    expect((await sv(["complete", "--", "img", ""])).stdout).toEndWith(":4\n");
+    expect((await sv(["complete", "--", "img", "web", "--format", ""])).stdout).toBe(
+      "webp\tBroad browser support\navif\tSmaller, slower to encode\n:4\n",
     );
     expect((await sv(["complete", "--", "--cwd", ""])).stdout).toBe(":16\n");
   });

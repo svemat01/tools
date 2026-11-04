@@ -2,17 +2,17 @@ import { argument, cli, command, description, multiple, name, option, schema, to
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
+import { complete, defineCommand, directories, files } from "../../kit/index.ts";
 import { runBatch, sizeTotals } from "../../lib/batch.ts";
-import { displayPath, discoverFiles, planOutputPath, writeFileAtomic } from "../../lib/fs.ts";
+import { discoverFiles, displayPath, planOutputPath, writeFileAtomic } from "../../lib/fs.ts";
 import {
-  IMAGE_EXTENSIONS,
   formatDimensions,
+  IMAGE_EXTENSIONS,
   inspectImage,
   parseDimensions,
   transformImage,
 } from "../../lib/image.ts";
 import { color, formatBytes, formatSavings, json, useColor } from "../../lib/output.ts";
-import { complete, defineCommand, directories, files } from "../../kit/index.ts";
 
 interface OgResult {
   readonly input: string;
@@ -33,7 +33,7 @@ export const og = defineCommand(
       name("files"),
       multiple(),
       description("Images or directories to process"),
-      schema(z.array(z.string()).min(1)),
+      schema(z.array(z.string()).default([])),
       complete(files({ extensions: IMAGE_EXTENSIONS })),
     ),
     option(
@@ -114,9 +114,13 @@ export const og = defineCommand(
         extensions: IMAGE_EXTENSIONS,
         respectGitIgnore: true,
       });
-      for (const path of discovered.missing) context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
+      for (const path of discovered.missing)
+        context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
       for (const path of discovered.unsupported) {
         context.stderr.write(`unsupported: ${displayPath(context.cwd, path)}\n`);
+      }
+      if (model.out !== undefined && discovered.files.length > 1) {
+        throw new Error("--out can only be used with a single input; use --out-dir for batches");
       }
       if (discovered.files.length === 0) throw new Error("No supported images found");
 

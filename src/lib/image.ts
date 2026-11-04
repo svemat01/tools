@@ -213,11 +213,14 @@ export async function transformImage(input: string, spec: TransformSpec): Promis
 /** Parse `1920x1080`, `1920X1080` or `1920×1080`. */
 export function parseDimensions(value: string): { readonly width: number; readonly height: number } {
   const match = /^\s*(\d+)\s*[x×]\s*(\d+)\s*$/i.exec(value);
-  if (!match) throw new Error(`Invalid dimensions ${JSON.stringify(value)}; expected WIDTHxHEIGHT, e.g. 1920x1080`);
+  if (!match)
+    throw new Error(`Invalid dimensions ${JSON.stringify(value)}; expected WIDTHxHEIGHT, e.g. 1920x1080`);
   const width = Number(match[1]);
   const height = Number(match[2]);
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-    throw new Error(`Invalid dimensions ${JSON.stringify(value)}; width and height must be positive integers`);
+    throw new Error(
+      `Invalid dimensions ${JSON.stringify(value)}; width and height must be positive integers`,
+    );
   }
   return { width, height };
 }

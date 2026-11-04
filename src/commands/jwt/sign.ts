@@ -2,9 +2,9 @@ import { cli, command, description, name, option, schema, toggle } from "@bomb.s
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
-import { JWT_ALGORITHMS, decodeToken, parseDuration, readSecret, signJwt } from "../../lib/jwt.ts";
-import { json } from "../../lib/output.ts";
 import { complete, defineCommand, files } from "../../kit/index.ts";
+import { decodeToken, JWT_ALGORITHMS, parseDuration, readSecret, signJwt } from "../../lib/jwt.ts";
+import { json } from "../../lib/output.ts";
 import { checkStdin, readPayload, secretSource } from "./input.ts";
 
 export const sign = defineCommand(
@@ -29,11 +29,7 @@ export const sign = defineCommand(
       complete(files()),
     ),
     toggle(name("secretStdin"), description("Read the secret from stdin")),
-    option(
-      name("payload"),
-      description("Inline JSON payload object"),
-      schema(z.string().optional()),
-    ),
+    option(name("payload"), description("Inline JSON payload object"), schema(z.string().optional())),
     option(
       name("payloadFile"),
       description("Read the JSON payload from a file"),
@@ -47,12 +43,36 @@ export const sign = defineCommand(
       description("Expiration, e.g. 30s, 15m, 1h, 7d"),
       schema(z.string().optional()),
     ),
-    option(name("issuer"), cli(["--issuer", "--iss"]), description("iss claim"), schema(z.string().optional())),
-    option(name("subject"), cli(["--subject", "--sub"]), description("sub claim"), schema(z.string().optional())),
-    option(name("audience"), cli(["--audience", "--aud"]), description("aud claim"), schema(z.string().optional())),
-    option(name("jwtId"), cli(["--jwt-id", "--jti"]), description("jti claim"), schema(z.string().optional())),
+    option(
+      name("issuer"),
+      cli(["--issuer", "--iss"]),
+      description("iss claim"),
+      schema(z.string().optional()),
+    ),
+    option(
+      name("subject"),
+      cli(["--subject", "--sub"]),
+      description("sub claim"),
+      schema(z.string().optional()),
+    ),
+    option(
+      name("audience"),
+      cli(["--audience", "--aud"]),
+      description("aud claim"),
+      schema(z.string().optional()),
+    ),
+    option(
+      name("jwtId"),
+      cli(["--jwt-id", "--jti"]),
+      description("jti claim"),
+      schema(z.string().optional()),
+    ),
     option(name("kid"), description("Key ID header (kid)"), schema(z.string().optional())),
-    toggle(name("noIssuedAt"), description("Do not set an iat claim automatically")),
+    toggle(
+      name("noIssuedAt"),
+      description("Do not set an iat claim automatically"),
+      cli(["--no-issued-at"], { switch: true }),
+    ),
     toggle(name("json"), description("Print machine-readable JSON")),
   ),
   {

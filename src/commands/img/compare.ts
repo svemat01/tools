@@ -1,13 +1,14 @@
-import { argument, cli, command, description, name, option, schema, toggle } from "@bomb.sh/router";
 import { basename, dirname, extname, join } from "node:path";
+
+import { argument, cli, command, description, name, option, schema, toggle } from "@bomb.sh/router";
 import pixelmatch from "pixelmatch";
 import sharp from "sharp";
 import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
+import { complete, defineCommand, files } from "../../kit/index.ts";
 import { displayPath, nextAvailablePath, planOutputPath, writeFileAtomic } from "../../lib/fs.ts";
 import { color, formatPercent, json, useColor } from "../../lib/output.ts";
-import { complete, defineCommand, files } from "../../kit/index.ts";
 
 interface RgbaImage {
   readonly data: Buffer;
@@ -34,7 +35,10 @@ function sibling(path: string, suffix: string): string {
   return join(dirname(path), `${basename(path, extension)}${suffix}${extension}`);
 }
 
-function metrics(before: RgbaImage, after: RgbaImage): { meanAbsoluteError: number; maxChannelDelta: number } {
+function metrics(
+  before: RgbaImage,
+  after: RgbaImage,
+): { meanAbsoluteError: number; maxChannelDelta: number } {
   let sum = 0;
   let max = 0;
   for (let index = 0; index < before.data.length; index += 4) {
@@ -45,7 +49,7 @@ function metrics(before: RgbaImage, after: RgbaImage): { meanAbsoluteError: numb
     }
   }
   return {
-    meanAbsoluteError: sum / ((before.width * before.height * 3) || 1),
+    meanAbsoluteError: sum / (before.width * before.height * 3 || 1),
     maxChannelDelta: max,
   };
 }
@@ -132,8 +136,14 @@ export const compare = defineCommand(
               : model.align === "smaller"
                 ? Math.min(before.height, after.height)
                 : Math.max(before.height, after.height);
-        before = before.width === width && before.height === height ? before : await resizeRgba(beforePath, width, height);
-        after = after.width === width && after.height === height ? after : await resizeRgba(afterPath, width, height);
+        before =
+          before.width === width && before.height === height
+            ? before
+            : await resizeRgba(beforePath, width, height);
+        after =
+          after.width === width && after.height === height
+            ? after
+            : await resizeRgba(afterPath, width, height);
         aligned = true;
       }
 
@@ -162,12 +172,12 @@ export const compare = defineCommand(
       });
       await writeFileAtomic(
         diffPath,
-        await sharp(diff, { raw: { width, height, channels: 4 } }).png().toBuffer(),
+        await sharp(diff, { raw: { width, height, channels: 4 } })
+          .png()
+          .toBuffer(),
       );
 
-      const outputs: { readonly kind: string; readonly path: string }[] = [
-        { kind: "diff", path: diffPath },
-      ];
+      const outputs: { readonly kind: string; readonly path: string }[] = [{ kind: "diff", path: diffPath }];
 
       if (model.sideBySide) {
         const gap = 16;
@@ -182,8 +192,12 @@ export const compare = defineCommand(
             background: { r: 255, g: 255, b: 255, alpha: 1 },
           },
         });
-        const beforePng = await sharp(before.data, { raw: { width, height, channels: 4 } }).png().toBuffer();
-        const afterPng = await sharp(after.data, { raw: { width, height, channels: 4 } }).png().toBuffer();
+        const beforePng = await sharp(before.data, { raw: { width, height, channels: 4 } })
+          .png()
+          .toBuffer();
+        const afterPng = await sharp(after.data, { raw: { width, height, channels: 4 } })
+          .png()
+          .toBuffer();
         await writeFileAtomic(
           sidePath,
           await canvas
