@@ -9,8 +9,11 @@ import { command, description, name, printHelp, version } from "@bomb.sh/router"
 import pkg from "../package.json" with { type: "json" };
 import { blog } from "./commands/blog/index.ts";
 import { dev } from "./commands/dev/index.ts";
+import { doctor } from "./commands/doctor.ts";
 import { gremlins } from "./commands/gremlins.ts";
 import { img } from "./commands/img/index.ts";
+import { init } from "./commands/init.ts";
+import { inspect } from "./commands/inspect.ts";
 import { jwt } from "./commands/jwt/index.ts";
 import { tunnel } from "./commands/tunnel.ts";
 import { video } from "./commands/video/index.ts";
@@ -31,6 +34,9 @@ export const sv = defineCommand(
     tunnel,
     jwt,
     dev,
+    inspect,
+    doctor,
+    init,
   ),
   {
     // Bare `sv`: an overview for now; a natural home for an interactive menu later.

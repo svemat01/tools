@@ -33,17 +33,44 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
 
 ## Commands
 
-| Group      | Commands                                         | Purpose                                                        |
-| ---------- | ------------------------------------------------ | -------------------------------------------------------------- |
-| `img`      | `web`, `og`, `resize`, `compare`, `info`, `tune` | WebP conversion, cover optimization, resizing, diffs, metadata |
-| `blog`     | `check`, `prepare`                               | Validate and safely prepare Markdown/MDX posts                 |
-| `video`    | `webm`                                           | Convert video to WebM/VP9                                      |
-| `gremlins` | —                                                | Find and fix invisible or suspicious Unicode                   |
-| `tunnel`   | —                                                | Expose a local port through a Cloudflare Quick Tunnel          |
-| `jwt`      | `decode`, `sign`, `verify`                       | Inspect and work with JSON Web Tokens                          |
-| `dev`      | `echo`                                           | Small development helpers                                      |
+| Group      | Commands                                 | Purpose                                                        |
+| ---------- | ---------------------------------------- | -------------------------------------------------------------- |
+| `inspect`  | —                                        | Read-only file metadata and bounded directory summaries        |
+| `doctor`   | —                                        | Check runtime, optional tools and project config               |
+| `init`     | —                                        | Preview and create a minimal project config                    |
+| `img`      | `web`, `og`, `resize`, `compare`, `info`, `tune` | Image conversion, covers, resizing, diffs, metadata and visual tuning |
+| `blog`     | `check`, `prepare`                       | Validate and safely prepare Markdown/MDX posts                 |
+| `video`    | `webm`                                   | Convert video to WebM/VP9                                      |
+| `gremlins` | —                                        | Find and fix invisible or suspicious Unicode                   |
+| `tunnel`   | —                                        | Expose a local port through a Cloudflare Quick Tunnel          |
+| `jwt`      | `decode`, `sign`, `verify`               | Inspect and work with JSON Web Tokens                          |
+| `dev`      | `echo`                                   | Small development helpers                                      |
 
 Every command has `--help` with its options, `--json` where structured output helps, and predictable exit codes: `0` success, `1` runtime failure, `2` usage error. Destructive actions are opt-in and previewed first.
+
+### Inspect and project setup
+
+```bash
+sv inspect cover.png --json
+sv inspect posts/                 # sample at most 200 immediate entries
+sv doctor --json                  # optional tools missing: warnings, exit 0
+sv init --dry-run --json          # preview only
+sv init --yes                     # atomically create; never overwrite
+```
+
+`inspect` reads local files without writing, accessing the network or calling a model. It classifies images, videos, Markdown/MDX, blog/project directories and other files, and suggests commands without running them. Images reuse `img info` metadata; videos reuse ffprobe with local file protocols only. Missing ffprobe or unreadable media metadata produces an actionable `metadata.status: "unavailable"` with the remaining inspection intact. Missing paths, rejected symlinks and invalid relevant project configs exit 1. Directory inspection never recurses: it examines at most 200 immediate entries, excludes hidden entries, generated/vendor directories and symlinks, and reports truncation. Counts describe the sample, not the full tree. Markdown title detection reads at most 64 KiB and looks for an ATX H1.
+
+Project discovery walks from the requested directory (or a file's parent) through ancestors. The nearest directory containing a marker wins. At that directory the precedence is `sv.config.json`, `sv.blog.json`, `.sv/blog.json`, `blog.config.json`, `.git`, then `package.json`. Both the sv config and the first blog config at the selected root are validated; malformed configs fail rather than silently falling back. Symbolic link paths/configs are refused.
+
+`init` targets the discovered project root, or the current directory when no marker exists. It previews the exact path and contents on stderr, then confirms interactively or requires `--yes` for noninteractive/JSON creation. `--dry-run` always previews without writing. Existing sv or blog configuration is reported unchanged. Version 1 is deliberately minimal:
+
+```json
+{ "schemaVersion": 1 }
+```
+
+Extra fields and unsupported versions are rejected. Blog behavior continues to use its existing blog config. `doctor` checks Bun >=1.4.0, presence of ffmpeg, ffprobe, cloudflared and a clipboard binary, plus selected project config validity. Optional missing tools warn with setup advice; invalid config/runtime exits 1. It never installs anything, executes the optional binaries or prints environment values. Binary presence does not guarantee desktop clipboard access or codec support.
+
+JSON envelopes include `command` and `schemaVersion: 1`. Inspect's `result.kind` discriminates `image`, `video`, `markdown`, `other`, `directory`, `project`, `blog` and `error`; media metadata uses `status: "available" | "unavailable"`. Suggestions include argv arrays (without the executable) and shell-quoted display commands. Init's `status` is `planned`, `created`, `existing` or `declined`; declining exits 1. Doctor includes `ok` and checks with `ok`, `warning` or `error` status. Reusable APIs live in `src/lib/project.ts` (`discoverProject`, `loadProjectConfig`, `ProjectConfigSchema`) and `src/lib/inspect.ts` (`inspectPath(path, { cwd, env, signal? })`).
 
 ### Images
 

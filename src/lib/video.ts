@@ -90,11 +90,20 @@ function parseFrameRate(value: string | undefined): number | undefined {
 export async function probeVideo(
   path: string,
   ffprobe: string,
-  options: { readonly signal?: AbortSignal } = {},
+  options: { readonly signal?: AbortSignal; readonly localOnly?: boolean } = {},
 ): Promise<VideoInfo> {
   const result = await runCommand(
     ffprobe,
-    ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
+    [
+      ...(options.localOnly ? ["-protocol_whitelist", "file,pipe"] : []),
+      "-v",
+      "error",
+      "-print_format",
+      "json",
+      "-show_format",
+      "-show_streams",
+      path,
+    ],
     { ...(options.signal ? { signal: options.signal } : {}) },
   );
   checkCommand(result);
