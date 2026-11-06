@@ -17,6 +17,8 @@ import { init } from "./commands/init.ts";
 import { inspect } from "./commands/inspect.ts";
 import { jwt } from "./commands/jwt/index.ts";
 import { paste } from "./commands/paste.ts";
+import { ready } from "./commands/ready.ts";
+import { share } from "./commands/share.ts";
 import { tunnel } from "./commands/tunnel.ts";
 import { undo } from "./commands/undo.ts";
 import { video } from "./commands/video/index.ts";
@@ -35,10 +37,12 @@ export const sv = defineCommand(
     video,
     gremlins,
     tunnel,
+    share,
     jwt,
     dev,
     inspect,
     paste,
+    ready,
     doctor,
     init,
     history,

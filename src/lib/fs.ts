@@ -14,6 +14,8 @@ import { runCommand } from "./process.ts";
 
 export const IGNORE_DIRECTORIES = new Set([
   ".git",
+  ".sv-ready",
+  "sv-ready",
   ".hg",
   ".svn",
   ".next",

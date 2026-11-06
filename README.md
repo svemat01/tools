@@ -43,6 +43,7 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
 | `blog`     | `check`, `prepare`                               | Validate and safely prepare Markdown/MDX posts                        |
 | `video`    | `webm`                                           | Convert video to WebM/VP9                                             |
 | `gremlins` | —                                                | Find and fix invisible or suspicious Unicode                          |
+| `share`    | —                                                | Deliberate local static/service sharing; optional public Quick Tunnel |
 | `tunnel`   | —                                                | Expose a local port through a Cloudflare Quick Tunnel                 |
 | `jwt`      | `decode`, `sign`, `verify`                       | Inspect and work with JSON Web Tokens                                 |
 | `dev`      | `echo`                                           | Small development helpers                                             |
@@ -142,6 +143,22 @@ sv gremlins docs/ --fix --yes          # apply, preserving encoding and line end
 ```
 
 Scanning and fixing are separate. `--fix` previews first, asks for confirmation on a TTY, and refuses to overwrite a file that changed after the scan. Typography replacements (curly quotes, en dashes) require `--fix-typography`. Missing targets and scan errors produce a failure exit status. Binary/non-UTF-8 files and files above `--max-bytes` are intentionally skipped and reported. Dry runs report findings as remaining and exit nonzero while findings exist. Replacement preserves file permissions. Explicit `gremlins --fix` applies across the selected file, including literal strings; review the preview when changing source code.
+
+### Share
+
+```bash
+sv share ./site --dry-run --json   # read-only manifest; no listener or tunnel
+sv share ./site --yes              # 127.0.0.1, automatically selected port
+sv share 3000 --yes --timeout 30m   # point to an existing loopback HTTP service
+sv share 'http://[::1]:8080/' --public --yes --json
+sv share ./site --public --copy    # confirm exact exposure, then copy the URL
+```
+
+`share` previews the exact target and static file manifest on stderr before asking to start. `--yes` approves noninteractive starts; JSON starts require it. `--preview` aliases `--dry-run`: both only inspect, even with `--public`, `--copy` or `--yes`. Local mode needs no optional binaries, opens no browser, and publishes nothing. Existing service targets are parsed without DNS lookup or HTTP requests: only HTTP(S), no credentials/fragments, ports 1–65535, and exact `localhost`, canonical IPv4 in 127/8, or IPv6 `[::1]`. A bare port selects `http://127.0.0.1:PORT/`. The service owns its responses, redirects and routes; sharing a URL path does not restrict public access to that path.
+
+Static sessions bind only `127.0.0.1`; `--port 0` (default) chooses a free port. Inspection fails above 5,000 traversed entries, 1,000 files, 100 MiB total or 16 nested directory levels. Dotfiles (including `.env` and `.git`), symlinks and `node_modules`, `vendor`, `dist`, `build`, `coverage`, `target`, `out` directories are skipped. Use an explicit static output directory as the target to share its contents. Symlinks in the selected path or its ancestors are refused. The manifest is fixed for the session: new files are unavailable, and edited/replaced files require restarting. Every read checks path components, opens without following a final symlink and verifies the file identity before and after a bounded read. GET and HEAD are supported with MIME types; a small escaped file listing is generated at `/` when there is no root `index.html`. No custom routes or script callbacks run in the server.
+
+`--public` explicitly starts the existing `cloudflared` Quick Tunnel lifecycle after approval; anyone with the link can access the selected static files or the entire existing service. Missing `cloudflared` reports installation guidance. No account, domain or persistent configuration is created. `--json` emits one `{command:"share", schemaVersion:1, event:"ready", url, mode, target}` event as soon as the local listener or public URL is ready, then stays alive. Plans and diagnostics remain on stderr. `--timeout` accepts `ms`, `s`, `m`, `h` (for example `30s` or `1.5h`); expiry and Ctrl+C stop the owned listener/tunnel. An existing service remains running. `--copy` calls the existing best-effort clipboard API only after readiness. QR codes, authentication and a dashboard are deferred.
 
 ### Tunnel
 
@@ -380,3 +397,58 @@ sv --cwd ./notes paste --out clip.txt --yes --json
 Readers use available native tools: `pbpaste` on macOS (text only), `wl-paste` on Wayland (preferred in a Wayland session), `xclip` on X11 (text/PNG), `xsel` (text only), or `powershell.exe` on Windows/WSL (text only). No GUI package is required by sv. Missing tools and failed desktop access produce actionable errors. PNG is preferred over a text representation when advertised; other advertised image formats are explicitly unsupported. Empty/text-incompatible selections on text-only backends are rejected; use a PNG-capable reader for image input. No clipboard data is interpolated into shell commands or child diagnostics.
 
 For future consumers, `readClipboard({ env?, signal?, maxBytes?, timeoutMs?, platform?, find?, run? })` in `src/lib/clipboard.ts` returns a discriminated `text`/`image` payload with bytes and MIME type, plus decoded text or PNG dimensions. `ClipboardError.code` distinguishes unavailable readers, desktop access, cancellation, timeout, byte limits, unsupported formats and invalid PNG data. Defaults are 16 MiB and a 3-second process deadline shared across negotiation and reading; listings are capped at 64 KiB. PNG validation also decodes with a 16 million pixel limit and checks cancellation afterward (native image decoding is not instantly interruptible). The injectable finder/byte runner supports isolated tests; runners must honor their supplied signal and limit. Existing `copyToClipboard()` callers are unchanged.
+
+### Ready: preview a preparation batch
+
+```bash
+sv ready posts/ images/                  # preview only; no files, reports or history written
+sv ready . --changed --json              # staged, unstaged and untracked files in Git
+sv ready images/ --out-dir sv-ready --review --apply  # full preview, then confirmation
+sv ready images/ --width 1280 --quality 75 --format webp --yes --json
+sv undo <recordId> --yes                 # remove the newly created outputs
+```
+
+`ready` recursively selects local content with deterministic ordering. The default is preview;
+`--dry-run` explicitly requests that behavior and takes precedence over application flags.
+`--apply` confirms after the full preview; `--yes` authorizes application directly.
+JSON application requires `--yes`. A clean changed selection is a successful no-op.
+Use root options before the command, for example `sv --cwd my-project ready . --changed`.
+
+V1 creates optimized **new static raster images**, preserving originals. Defaults are WebP,
+1600px maximum width (no enlargement), quality 82. AVIF is also supported. Existing target-format
+images within the width are skipped unless `--quality` or `--review` is explicit. Animation,
+multiple pages, SVG and unknown file types are reported as unsupported. Video is inspected and
+gets a suggested `video webm` command; it is never converted by `ready`. Markdown/MDX uses the
+existing blog checks for metadata, links, media and Unicode, with suggested separate commands.
+Checks can report unresolved content issues even when image application succeeds; ready does
+not rewrite posts, fix links or promise that every issue is handled. Blog checks run per selected
+post, so this increment does not check duplicate slugs across the whole project.
+
+Outputs default to `.sv-ready/` under the command's cwd. Prefer an explicit dedicated `--out-dir`.
+Existing destinations receive numeric suffixes; the whole batch reserves names, including
+colliding basenames from different directories. Default generated directories (`.sv-ready` and
+`sv-ready`), the current output directory, history, hidden descendants and vendor/build directories
+are excluded. Reuse the same explicit output directory on later runs to exclude custom outputs.
+`--review` plans one existing offline image-review HTML per applied image, containing the chosen
+encoding and a lossless resized reference. Preview emits no report. All outputs, including
+reports, are recorded together through the existing file-plan executor; the result exposes
+`recordId` for `history` and `undo`. Undo removes files, leaving any empty output directories.
+
+Planning failures (missing/unreadable inputs, broken media, invalid selected project config or
+exceeded budgets) block the entire application. Source fingerprints come from the exact in-memory
+snapshots used for encoding; changed sources are rejected before writes. Publication is atomic
+per file, not a multi-file transaction: a later race or I/O failure can return a partial receipt
+for inspection/recovery. `ready` never replaces or deletes sources.
+
+Budgets are intentionally fixed: 200 selected files, 1000 traversed entries, 12 MiB per image or
+Markdown input, 24 megapixels per image, width at most 2560, 64 MiB total image snapshots and
+64 MiB total encoded outputs (including HTML). Reviews additionally cap embedded images at
+20 MiB each. Snapshots and encoded outputs stay in memory until application; decoding uses
+additional memory. Narrow targets or reduce width when a budget is exceeded. Blog checks also
+read referenced local metadata/media through their existing APIs.
+
+`--changed` uses NUL-delimited Git argv calls without shell evaluation. It unions staged,
+unstaged and untracked paths, supports unborn HEAD and filenames containing spaces/newlines,
+and scopes changes to the supplied files/directories (default cwd). Deleted files are listed as
+skipped; unknown targets and use outside Git are errors. It does not implement watch, presets,
+model-based fixes, uploads or publishing.

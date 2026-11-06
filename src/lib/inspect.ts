@@ -42,7 +42,7 @@ export interface DirectorySummary {
   skipped: number;
 }
 export const INSPECT_ENTRY_LIMIT = 200;
-const SKIP = new Set(["node_modules", "vendor", "dist", "build", "coverage", "target", "out"]);
+const SKIP = new Set(["node_modules", "vendor", "dist", "build", "coverage", "target", "out", "sv-ready"]);
 
 export function classifyFile(path: string): FileKind {
   const extension = extname(path).slice(1).toLowerCase();
