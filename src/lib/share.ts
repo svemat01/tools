@@ -89,10 +89,20 @@ export function shareHandler(manifest: ShareManifest): (request: Request) => Pro
   const index = `<!doctype html><meta charset="utf-8"><title>Shared files</title><h1>Shared files</h1><ul>${[...manifest.files.keys()].map((name) => `<li><a href="/${escapeHtml(name.split("/").map(encodeURIComponent).join("/"))}">${escapeHtml(name)}</a></li>`).join("")}</ul>`;
   return async (request) => {
     const head = request.method === "HEAD";
-    const reply = (body: string | Uint8Array, status: number, type = "text/plain; charset=utf-8") =>
+    const reply = (
+      body: string | Uint8Array,
+      status: number,
+      type = "text/plain; charset=utf-8",
+      length = typeof body === "string" ? Buffer.byteLength(body) : body.byteLength,
+    ) =>
       new Response(head ? null : body, {
         status,
-        headers: { "Content-Type": type, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" },
+        headers: {
+          "Content-Type": type,
+          "Content-Length": String(length),
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "no-store",
+        },
       });
     if (request.method !== "GET" && !head) return reply("Method not allowed", 405);
     let name: string;
@@ -128,6 +138,8 @@ export function shareHandler(manifest: ShareManifest): (request: Request) => Pro
       const stat = await file.stat();
       if (!stat.isFile() || !same(identity, stat)) return reply("File changed; restart sharing", 409);
       await noSymlinks(path);
+      const type = Bun.file(path).type || "application/octet-stream";
+      if (head) return reply("", 200, type, identity.size);
       // Read at most the inspected length, even if a file grows during this request.
       const data = Buffer.alloc(identity.size);
       let offset = 0;
@@ -138,7 +150,7 @@ export function shareHandler(manifest: ShareManifest): (request: Request) => Pro
       }
       if (offset !== data.length || !same(identity, await file.stat()))
         return reply("File changed; restart sharing", 409);
-      return reply(data, 200, Bun.file(path).type || "application/octet-stream");
+      return reply(data, 200, type);
     } catch {
       return reply("Not found", 404);
     } finally {

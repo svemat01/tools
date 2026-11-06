@@ -173,7 +173,7 @@ describe("init and doctor", () => {
     expect(result.code).toBe(0);
     expect(
       JSON.parse(result.stdout).checks.filter((check: { status: string }) => check.status === "warning"),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
     expect(result.stdout).not.toContain("private-env-value");
     expect(result.stderr).toBe("");
   });
@@ -183,4 +183,25 @@ describe("init and doctor", () => {
     expect((await run(["init", "--yes", "--json"])).code).toBe(1);
     expect(await readFile(join(root, "original.json"), "utf8")).toBe('{"schemaVersion":1}');
   });
+});
+
+test("doctor distinguishes clipboard readers from writers without invoking either", async () => {
+  await put("pbcopy", "#!/bin/sh\nexit 99\n");
+  await chmod(join(root, "pbcopy"), 0o755);
+  const result = await runApp(app, ["doctor", "--json"], { cwd: root, env: { PATH: root } });
+  const checks = JSON.parse(result.stdout).checks;
+  expect(checks).toContainEqual(expect.objectContaining({ name: "clipboard-copy", status: "ok" }));
+  expect(checks).toContainEqual(expect.objectContaining({ name: "clipboard-read", status: "warning" }));
+});
+
+test("human inspection presents readable dimensions and missing-tool guidance", async () => {
+  await sharp({ create: { width: 12, height: 8, channels: 3, background: "red" } })
+    .png()
+    .toFile(join(root, "a.png"));
+  const image = await run(["inspect", "a.png"]);
+  expect(image.stdout).toContain("PNG · 12×8");
+  expect(image.stdout).not.toContain('"metadata"');
+  expect(image.stdout).toContain("Try: sv img info");
+  await put("clip.mp4", "fixture");
+  expect((await run(["inspect", "clip.mp4"])).stdout).toContain("Metadata unavailable: ffprobe");
 });

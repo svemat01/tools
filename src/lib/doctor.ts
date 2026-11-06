@@ -1,4 +1,4 @@
-import { clipboardCommand } from "./clipboard.ts";
+import { clipboardCommand, clipboardReader } from "./clipboard.ts";
 import { findBinary } from "./process.ts";
 import { discoverProject, loadProjectConfig } from "./project.ts";
 
@@ -27,19 +27,24 @@ export async function doctor(cwd: string, env: Readonly<Record<string, string | 
         : `Optional: install ${binary === "ffprobe" ? "FFmpeg (includes ffprobe)" : binary} and add it to PATH to enable ${binary === "cloudflared" ? "tunnels" : "video processing"}.`,
     });
   }
-  checks.push(
-    clipboardCommand(env)
-      ? {
-          name: "clipboard",
-          status: "ok",
-          message: "Clipboard binary available (desktop access is not tested)",
-        }
-      : {
-          name: "clipboard",
-          status: "warning",
-          message: "Optional: install pbcopy, wl-copy, xclip, xsel or clip.exe for clipboard support.",
-        },
-  );
+  for (const [name, available, advice] of [
+    [
+      "clipboard-copy",
+      clipboardCommand(env) !== undefined,
+      "Install pbcopy, wl-copy, xclip, xsel or clip.exe to copy URLs.",
+    ],
+    [
+      "clipboard-read",
+      clipboardReader({ env }) !== undefined,
+      "Install pbpaste, wl-paste, xclip, xsel or PowerShell to use sv paste.",
+    ],
+  ] as const) {
+    checks.push({
+      name,
+      status: available ? "ok" : "warning",
+      message: available ? "Binary available; desktop access is not tested" : `Optional: ${advice}`,
+    });
+  }
   let project: Awaited<ReturnType<typeof discoverProject>> = undefined;
   try {
     project = await discoverProject(cwd);

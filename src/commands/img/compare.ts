@@ -23,12 +23,13 @@ interface RgbaImage {
 }
 
 async function loadRgba(path: string): Promise<RgbaImage> {
-  const { data, info } = await sharp(path).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = await sharp(path).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height };
 }
 
 async function resizeRgba(path: string, width: number, height: number): Promise<RgbaImage> {
   const { data, info } = await sharp(path)
+    .rotate()
     .resize({ width, height, fit: "fill" })
     .ensureAlpha()
     .raw()

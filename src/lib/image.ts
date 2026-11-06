@@ -86,7 +86,8 @@ export async function inspectImage(path: string): Promise<ImageInfo> {
   return {
     path,
     bytes: await fileSize(path),
-    format: metadata.format ?? "unknown",
+    format:
+      metadata.format === "heif" && metadata.compression === "av1" ? "avif" : (metadata.format ?? "unknown"),
     width,
     height,
     ...(metadata.space === undefined ? {} : { space: metadata.space }),

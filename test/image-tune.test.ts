@@ -197,6 +197,7 @@ test("emitted controls select downloads, zoom a shared grid and move the divider
     "stage",
     "divider",
     "line",
+    "image-status",
   ];
   const nodes = Object.fromEntries(ids.map((id) => [id, new Element()]));
   const node = (id: string) => nodes[id]!;
@@ -210,6 +211,12 @@ test("emitted controls select downloads, zoom a shared grid and move the divider
   expect(node("quality").children).toHaveLength(2);
   expect(node("original").src).toBe(review.reference.url);
   expect(node("encoded").src).toBe(review.variants[0]!.url);
+  expect(node("quality").children[0]!.textContent).toContain("bytes");
+  node("encoded").events.error!();
+  expect(node("image-status").textContent).toContain("could not display");
+  expect(node("download").href).toBe(review.variants[0]!.url);
+  node("encoded").events.load!();
+  expect(node("image-status").textContent).toBe("");
   node("quality").value = "1";
   node("quality").events.change!();
   expect(node("download").download).toBe(review.variants[1]!.filename);

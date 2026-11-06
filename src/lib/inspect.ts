@@ -2,6 +2,7 @@ import { lstat, open, opendir } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 
 import { IMAGE_EXTENSIONS, type ImageInfo, inspectImage } from "./image.ts";
+import { shellCommand } from "./output.ts";
 import { findBinary } from "./process.ts";
 import { assertNoSymlinks, type DiscoveredProject, discoverProject, loadProjectConfig } from "./project.ts";
 import { probeVideo, VIDEO_EXTENSIONS, type VideoInfo } from "./video.ts";
@@ -51,7 +52,7 @@ export function classifyFile(path: string): FileKind {
   return ["md", "mdx", "markdown"].includes(extension) ? "markdown" : "other";
 }
 function suggest(...argv: string[]): Suggestion {
-  return { argv, command: ["sv", ...argv].map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(" ") };
+  return { argv, command: shellCommand(["sv", ...argv]) };
 }
 async function summarize(path: string, signal?: AbortSignal): Promise<DirectorySummary> {
   const entries: DirectorySummary["entries"] = [];

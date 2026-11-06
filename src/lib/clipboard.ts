@@ -24,19 +24,41 @@ export function clipboardCommand(
 export async function copyToClipboard(
   text: string,
   env: Readonly<Record<string, string | undefined>>,
+  options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {},
 ): Promise<boolean> {
+  if (options.signal?.aborted) return false;
   const candidate = clipboardCommand(env);
   if (!candidate) return false;
+  const timeoutMs = options.timeoutMs ?? 3000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)
+    throw new RangeError("Clipboard timeout must be a positive integer");
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  const abort = () => {
+    try {
+      child?.kill("SIGKILL");
+    } catch {
+      /* Already exited. */
+    }
+  };
   try {
-    const child = Bun.spawn([candidate.command, ...candidate.args], {
+    child = Bun.spawn([candidate.command, ...candidate.args], {
       env: { ...process.env, ...env },
       stdin: new Blob([text]),
       stdout: "ignore",
       stderr: "ignore",
     });
-    return (await child.exited) === 0;
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    const code = await child.exited;
+    return !signal.aborted && code === 0;
   } catch {
     return false;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    abort();
+    await child?.exited;
   }
 }
 
@@ -123,14 +145,8 @@ const readProcess: ClipboardRunner = async (command, args, options) => {
   }
 };
 
-/** Explicit, bounded clipboard input. Reading never clears or modifies the selection. */
-export async function readClipboard(options: ClipboardReadOptions = {}): Promise<ClipboardPayload> {
-  if (options.signal?.aborted) throw new ClipboardError("cancelled", "Clipboard read cancelled.");
-  const maxBytes = options.maxBytes ?? 16 * 1024 * 1024;
-  const timeoutMs = options.timeoutMs ?? 3000;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
-    throw new RangeError("Clipboard limits must be positive safe integers");
-  }
+/** Detect a reader without reading the clipboard or testing desktop access. */
+export function clipboardReader(options: Pick<ClipboardReadOptions, "env" | "platform" | "find"> = {}) {
   const env = options.env ?? process.env;
   const find = options.find ?? ((name: string) => findBinary(name, env));
   const platform = options.platform ?? process.platform;
@@ -143,13 +159,26 @@ export async function readClipboard(options: ClipboardReadOptions = {}): Promise
           ? ["wl-paste", "xclip", "xsel", "powershell.exe"]
           : ["xclip", "xsel", "wl-paste", "powershell.exe"];
   const backend = names.find((name) => find(name) !== undefined);
-  if (!backend) {
+  if (!backend) return undefined;
+  return { backend, executable: find(backend)! };
+}
+
+/** Explicit, bounded clipboard input. Reading never clears or modifies the selection. */
+export async function readClipboard(options: ClipboardReadOptions = {}): Promise<ClipboardPayload> {
+  if (options.signal?.aborted) throw new ClipboardError("cancelled", "Clipboard read cancelled.");
+  const maxBytes = options.maxBytes ?? 16 * 1024 * 1024;
+  const timeoutMs = options.timeoutMs ?? 3000;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new RangeError("Clipboard limits must be positive safe integers");
+  }
+  const env = options.env ?? process.env;
+  const reader = clipboardReader(options);
+  if (!reader)
     throw new ClipboardError(
       "unavailable",
       "No clipboard reader found. Use pbpaste (macOS), wl-paste (Wayland), xclip/xsel (X11), or PowerShell (Windows/WSL) in a desktop session.",
     );
-  }
-  const executable = find(backend)!;
+  const { backend, executable } = reader;
   const deadline = AbortSignal.timeout(timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   const run = options.run ?? readProcess;

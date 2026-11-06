@@ -228,3 +228,50 @@ setInterval(() => {}, 1000);
     10000,
   );
 });
+
+test("AVIF is recognized for info, same-format preservation and resizing", async () => {
+  const root = await temporary();
+  const input = join(root, "source.avif");
+  await sharp({ create: { width: 16, height: 12, channels: 3, background: "red" } })
+    .avif()
+    .toFile(input);
+  const original = await readFile(input);
+  const info = await runApp(app, ["img", "info", input, "--json"], { cwd: root });
+  expect(JSON.parse(info.stdout).files[0].format).toBe("avif");
+  const skipped = await runApp(app, ["img", "web", input, "--format", "avif", "--json"], { cwd: root });
+  expect(skipped.code).toBe(0);
+  expect(JSON.parse(skipped.stdout).files[0].skipped).toBe(true);
+  expect(await readFile(input)).toEqual(original);
+  const resized = await runApp(app, ["img", "resize", input, "--width", "8", "--json"], { cwd: root });
+  expect(resized.code).toBe(0);
+  const output = join(root, JSON.parse(resized.stdout).files[0].output);
+  expect(await sharp(output).metadata()).toMatchObject({ width: 8, compression: "av1" });
+});
+
+test("web width limits follow display orientation, and visual comparison auto-orients", async () => {
+  const root = await temporary();
+  const rotated = join(root, "rotated.webp");
+  await sharp({ create: { width: 16, height: 32, channels: 3, background: "red" } })
+    .webp()
+    .withMetadata({ orientation: 6 })
+    .toFile(rotated);
+  const web = await runApp(app, ["img", "web", rotated, "--width", "20", "--json"], { cwd: root });
+  expect(web.code).toBe(0);
+  expect(JSON.parse(web.stdout).files[0]).toMatchObject({ skipped: false, width: 20, height: 10 });
+  const narrow = join(root, "narrow.webp");
+  await sharp({ create: { width: 32, height: 16, channels: 3, background: "red" } })
+    .webp()
+    .withMetadata({ orientation: 6 })
+    .toFile(narrow);
+  const kept = await runApp(app, ["img", "web", narrow, "--width", "20", "--json"], { cwd: root });
+  expect(JSON.parse(kept.stdout).files[0]).toMatchObject({ skipped: true, width: 16, height: 32 });
+  const normal = join(root, "normal.png"),
+    turned = join(root, "turned.png");
+  await sharp({ create: { width: 16, height: 32, channels: 3, background: "blue" } })
+    .png()
+    .toFile(normal);
+  await sharp(normal).withMetadata({ orientation: 6 }).toFile(turned);
+  const compared = await runApp(app, ["img", "compare", normal, turned, "--json"], { cwd: root });
+  expect(compared.code).toBe(1);
+  expect(compared.stderr).toContain("Image dimensions differ");
+});

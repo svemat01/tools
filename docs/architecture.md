@@ -1,5 +1,7 @@
 # Architecture
 
+[Home](../README.md) · [Development](development.md) · [User workflows](workflows.md)
+
 `src/kit/` makes `@bomb.sh/router` 0.8 and `@bomb.sh/tab` 0.0.22 work as one CLI without wrapping either. Router owns definitions, parsing, models, help and errors. Tab owns completion parsing and shell scripts. The kit adds:
 
 | Concern                       | Module           | Size of the idea                                               |

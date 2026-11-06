@@ -14,7 +14,12 @@ export const paste = defineCommand(
   command(
     name("paste"),
     description("Summarize clipboard content privately; explicitly save with --out"),
-    option(name("out"), schema(z.string().optional()), complete(files())),
+    option(
+      name("out"),
+      description("Save exact clipboard bytes to a new file; PNG requires .png"),
+      schema(z.string().optional()),
+      complete(files()),
+    ),
     toggle(name("yes"), description("Approve saving without prompting")),
     toggle(name("json"), description("Print metadata only; saving requires --yes")),
   ),

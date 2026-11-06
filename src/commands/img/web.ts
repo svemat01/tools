@@ -144,7 +144,9 @@ export const web = defineCommand(
           const source = model.record ? await readFile(input) : Buffer.alloc(0);
           const info = await inspectImage(input);
           const sourceFormat = normalizeFormat(info.format);
-          const needsResize = !model.keepSize && info.width > model.width;
+          const orientedWidth = (info.orientation ?? 1) >= 5 ? info.height : info.width;
+          const orientedHeight = (info.orientation ?? 1) >= 5 ? info.width : info.height;
+          const needsResize = !model.keepSize && orientedWidth > model.width;
           const needsReencode = sourceFormat !== format || model.reencode || model.quality !== undefined;
           const explicitOutput = model.out !== undefined || model.outDir !== undefined;
           if (!needsResize && !needsReencode && !explicitOutput) {
@@ -153,8 +155,8 @@ export const web = defineCommand(
               output: input,
               before: info.bytes,
               after: info.bytes,
-              width: info.width,
-              height: info.height,
+              width: orientedWidth,
+              height: orientedHeight,
               skipped: true,
             };
           }
@@ -193,8 +195,8 @@ export const web = defineCommand(
               output,
               before: info.bytes,
               after: info.bytes,
-              width: info.width,
-              height: info.height,
+              width: orientedWidth,
+              height: orientedHeight,
               skipped: false,
             };
           }

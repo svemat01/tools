@@ -58,6 +58,7 @@ export interface ReadyPlan {
   entries: ReadyEntry[];
   actions: ReadyAction[];
   failures: string[];
+  checks: { files: number; errors: number; warnings: number; infos: number; ok: boolean };
   /** Encoded bytes held until application; never include these in CLI output. */
   operations: FileOperation[];
   options: ReadyOptions;
@@ -199,9 +200,18 @@ export async function inspectReady(
         if (kind === "markdown") {
           if ((await lstat(path)).size > READY_LIMITS.inputBytes)
             throw new Error("Markdown exceeds 12 MiB; inspect separately");
-          const config = loaded?.blog ?? (await loadBlogConfig(dirname(path)));
-          const blog = await resolveBlogProject(path, options.cwd, config.config);
-          const checked = await checkBlog(blog, config.config, { cwd: options.cwd });
+          const loadedConfig = loaded?.blog ?? (await loadBlogConfig(dirname(path)));
+          // Ordinary READMEs and notes are not blog posts. Validate their content
+          // without inventing mandatory frontmatter or slug conventions.
+          const config = loadedConfig.source
+            ? loadedConfig.config
+            : {
+                ...loadedConfig.config,
+                metadataFiles: [],
+                checks: { ...loadedConfig.config.checks, metadata: false, slugs: false },
+              };
+          const blog = await resolveBlogProject(path, options.cwd, config);
+          const checked = await checkBlog(blog, config, { cwd: options.cwd });
           if (checked.issues.some((issue) => issue.code === "unreadable-entry"))
             throw new Error("Blog entry could not be read; run sv blog check for diagnostics");
           entries.push({
@@ -210,12 +220,15 @@ export async function inspectReady(
             status: "inspected",
             inspection,
             issues: checked.issues,
-            reason:
-              "Checks only; review issues with sv blog check; use sv blog prepare separately for rewrites",
-            suggestions: [
-              ["blog", "check", path],
-              ["blog", "prepare", path, "--dry-run"],
-            ],
+            reason: loadedConfig.source
+              ? "Checks only; use sv blog prepare separately for rewrites"
+              : "Markdown content checks only; no blog metadata conventions are required",
+            suggestions: loadedConfig.source
+              ? [
+                  ["blog", "check", path],
+                  ["blog", "prepare", path, "--dry-run"],
+                ]
+              : [],
           });
         } else {
           if (
@@ -359,14 +372,24 @@ export async function planReady(inspection: ReadyInspection): Promise<ReadyPlan>
     }
   }
   options.signal?.throwIfAborted();
+  const issues = entries.flatMap((entry) => entry.issues ?? []);
+  const errors = issues.filter((issue) => issue.severity === "error");
   return {
     entries,
     actions,
     operations,
     options,
-    failures: entries
-      .filter((entry) => entry.status === "error")
-      .map((entry) => `${entry.path}: ${entry.reason}`),
+    checks: {
+      files: entries.filter((entry) => entry.issues !== undefined).length,
+      errors: errors.length,
+      warnings: issues.filter((issue) => issue.severity === "warn").length,
+      infos: issues.filter((issue) => issue.severity === "info").length,
+      ok: errors.length === 0,
+    },
+    failures: [
+      ...entries.filter((entry) => entry.status === "error").map((entry) => `${entry.path}: ${entry.reason}`),
+      ...errors.map((issue) => `${issue.file}:${issue.line ?? 1}: ${issue.code}: ${issue.message}`),
+    ],
   };
 }
 export async function applyReady(plan: ReadyPlan) {

@@ -38,7 +38,7 @@ export const tunnel = defineCommand(
         signal: context.signal,
         stdout: context.stdout,
         stderr: context.stderr,
-        copyUrl: (url) => copyToClipboard(url, context.env),
+        copyUrl: (url) => copyToClipboard(url, context.env, { signal: context.signal }),
       });
 
       if (!model.json) {

@@ -82,6 +82,7 @@ test("handler serves only inspected files; HEAD, MIME, errors and escaped index"
   expect(head.status).toBe(200);
   expect(head.headers.get("content-type")).toContain("text/plain");
   expect(await head.text()).toBe("");
+  expect(head.headers.get("content-length")).toBe("5");
   expect((await handler(request(url, "POST"))).status).toBe(405);
   await put("new.txt", "new secret");
   for (const path of [
@@ -296,4 +297,32 @@ test("uncooperative fake tunnel receives forced stop after timeout", async () =>
   expect(result.code).toBe(0);
   const pid = Number(await readFile(join(root, "pid"), "utf8"));
   expect(() => process.kill(pid, 0)).toThrow();
+});
+
+test("a stalled clipboard copier cannot delay session expiry or report success after stopping", async () => {
+  await put("pbcopy", "#!/bin/sh\nexec /bin/sleep 10\n");
+  await chmod(join(root, "pbcopy"), 0o755);
+  const stdout = capture(),
+    stderr = capture();
+  const started = performance.now();
+  const code = await app.run(["share", "3000", "--yes", "--copy", "--timeout", "30ms"], {
+    cwd: root,
+    env: { PATH: root },
+    stdout,
+    stderr,
+  });
+  expect(code).toBe(0);
+  expect(performance.now() - started).toBeLessThan(1000);
+  expect(stdout.text).toContain("Stop with Ctrl+C");
+  expect(stderr.text).not.toContain("Copied");
+});
+
+test("human share preview describes the snapshot and gives a usable start command", async () => {
+  await put("a.txt");
+  const result = await run(["share", ".", "--dry-run"]);
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("1 file");
+  expect(result.stdout).toContain("Preview only; no server or tunnel started");
+  expect(result.stdout).toContain(`share . --yes`);
+  expect(result.stdout).not.toContain('"schemaVersion"');
 });

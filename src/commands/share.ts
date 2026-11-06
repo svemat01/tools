@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { AppContext } from "../context.ts";
 import { complete, defineCommand, directories } from "../kit/index.ts";
 import { copyToClipboard } from "../lib/clipboard.ts";
+import { formatBytes, plural, shellCommand } from "../lib/output.ts";
 import { inspectShareDirectory, parseShareService, shareDuration, shareHandler } from "../lib/share.ts";
 import { startTunnel } from "../lib/tunnel.ts";
 
@@ -13,7 +14,12 @@ export const share = defineCommand(
   command(
     name("share"),
     description("Start a deliberate local sharing session; --public opts into a Quick Tunnel"),
-    argument(name("target"), schema(z.string()), complete(directories())),
+    argument(
+      name("target"),
+      description("Static directory, local port, or loopback HTTP(S) URL"),
+      schema(z.string()),
+      complete(directories()),
+    ),
     option(
       name("port"),
       description("Static server port; 0 selects a free port"),
@@ -51,15 +57,39 @@ export const share = defineCommand(
           ? { files: [...manifest.files.keys()], bytes: manifest.bytes, bind: "127.0.0.1", port: model.port }
           : {}),
       };
-      context.stderr.write(
-        `${model.public ? "PUBLIC: anyone with the URL can access" : "LOCAL: loopback only"}\n${JSON.stringify(plan, null, 2)}\n`,
+      const preview = model.dryRun || model.preview;
+      const output = preview && !model.json ? context.stdout : context.stderr;
+      output.write(
+        `${model.public ? "Public sharing: anyone with the URL can access the selected content" : "Local sharing: loopback only"}\nTarget: ${plan.target}\n`,
       );
+      if (manifest) {
+        output.write(
+          `${manifest.files.size} ${plural(manifest.files.size, "file")} · ${formatBytes(manifest.bytes)} · static snapshot\n`,
+        );
+        for (const name of manifest.files.keys()) output.write(`  ${name}\n`);
+      }
       if (service)
         context.stderr.write(
           "The existing service controls its responses and redirects; all of its routes may be exposed. No service request has been made.\n",
         );
-      if (model.dryRun || model.preview) {
+      if (preview) {
         if (model.json) context.stdout.write(`${JSON.stringify(plan)}\n`);
+        else {
+          const command = [
+            context.program,
+            ...(resolve(context.cwd) === process.cwd() ? [] : ["--cwd", context.cwd]),
+            "share",
+            model.target,
+            ...(model.public ? ["--public"] : []),
+            ...(model.port ? ["--port", String(model.port)] : []),
+            ...(model.timeout ? ["--timeout", model.timeout] : []),
+            ...(model.copy ? ["--copy"] : []),
+            "--yes",
+          ];
+          context.stdout.write(
+            `Preview only; no server or tunnel started.\nStart: ${shellCommand(command)}\n`,
+          );
+        }
         return 0;
       }
       if (!model.yes && (model.json || !(await context.confirm(`Start ${mode} sharing?`)))) {
@@ -77,7 +107,7 @@ export const share = defineCommand(
         context.stdout.write(
           model.json
             ? `${JSON.stringify({ command: "share", schemaVersion: 1, event: "ready", url, mode, target: plan.target })}\n`
-            : `${mode === "public" ? "Public" : "Local"} sharing: ${url}\n`,
+            : `${mode === "public" ? "Public" : "Local"} sharing: ${url}\nStop with Ctrl+C${model.timeout ? `; expires after ${model.timeout}` : ""}.\n`,
         );
       };
       try {
@@ -98,14 +128,15 @@ export const share = defineCommand(
             stderr: context.stderr,
             json: model.json,
             copy: model.copy,
-            copyUrl: (url) => copyToClipboard(url, context.env),
+            copyUrl: (url) => copyToClipboard(url, context.env, { signal: session.signal }),
           });
           return result.code;
         }
         ready(localUrl);
         if (model.copy) {
-          const copied = await copyToClipboard(localUrl, context.env);
-          context.stderr.write(copied ? "Copied the local URL.\n" : "Could not copy to the clipboard.\n");
+          const copied = await copyToClipboard(localUrl, context.env, { signal: session.signal });
+          if (!session.signal.aborted)
+            context.stderr.write(copied ? "Copied the local URL.\n" : "Could not copy to the clipboard.\n");
         }
         if (!session.signal.aborted)
           await new Promise<void>((done) =>

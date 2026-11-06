@@ -38,9 +38,10 @@ test("mixed preview is read-only and reports checks, unsupported files and expli
   await writeFile(join(opts.cwd, "notes.txt"), "notes");
   const before = await readdir(opts.cwd);
   const result = await runApp(app, ["ready", ".", "--review", "--json"], opts);
-  expect(result.code).toBe(0);
+  expect(result.code).toBe(1);
   const data = JSON.parse(result.stdout);
-  expect(data.status).toBe("planned");
+  expect(data.status).toBe("blocked");
+  expect(data.checks.errors).toBeGreaterThan(0);
   expect(data.actions.map((a: { kind: string }) => a.kind)).toEqual(["image", "review"]);
   expect(data.entries.find((e: { kind: string }) => e.kind === "other").status).toBe("unsupported");
   expect(data.entries.find((e: { kind: string }) => e.kind === "markdown").issues.length).toBeGreaterThan(0);
@@ -329,4 +330,56 @@ test("review source dimensions reflect EXIF orientation", async () => {
   expect(data.reference).toMatchObject({ width: 16, height: 32 });
   expect(data.variants[0]).toMatchObject({ width: 16, height: 32 });
   await absent(join(opts.cwd, ".sv-ready"));
+});
+
+test("ordinary Markdown does not require blog frontmatter, but broken content blocks all writes", async () => {
+  const opts = await setup();
+  await image(join(opts.cwd, "hero.png"));
+  await writeFile(join(opts.cwd, "README.md"), "# Project\nA useful project.\n");
+  const clean = await runApp(app, ["ready", ".", "--json"], opts);
+  expect(clean.code).toBe(0);
+  expect(JSON.parse(clean.stdout)).toMatchObject({
+    status: "planned",
+    checks: { files: 1, errors: 0, ok: true },
+  });
+  await writeFile(join(opts.cwd, "README.md"), "# Project\n[broken](absent.md)\n");
+  const blocked = await runApp(app, ["ready", ".", "--yes", "--json"], opts);
+  expect(blocked.code).toBe(1);
+  expect(JSON.parse(blocked.stdout).status).toBe("blocked");
+  expect(JSON.parse(blocked.stdout).failures.join("\n")).toContain("broken-link");
+  await absent(join(opts.cwd, ".sv-ready"));
+  await absent(opts.env.XDG_STATE_HOME);
+});
+
+test("configured blogs enforce metadata while warnings are nonblocking", async () => {
+  const opts = await setup();
+  await writeFile(join(opts.cwd, "sv.blog.json"), JSON.stringify({ requiredMetadata: ["title"] }));
+  await writeFile(join(opts.cwd, "post.md"), "# Post\n");
+  const missing = await runApp(app, ["ready", "post.md", "--json"], opts);
+  expect(missing.code).toBe(1);
+  expect(JSON.parse(missing.stdout).checks).toMatchObject({ errors: 1, ok: false });
+  await writeFile(join(opts.cwd, "post.md"), "---\ntitle: Post\n---\nCurly “quotes”\n");
+  const warnings = await runApp(app, ["ready", "post.md", "--json"], opts);
+  expect(warnings.code).toBe(0);
+  expect(JSON.parse(warnings.stdout).checks).toMatchObject({ errors: 0, ok: true });
+  expect(JSON.parse(warnings.stdout).checks.warnings).toBeGreaterThan(0);
+});
+
+test("human preview is readable and its next command retains --cwd and encoding settings", async () => {
+  const opts = await setup();
+  await image(join(opts.cwd, "hero image.png"));
+  const result = await runApp(
+    app,
+    ["--cwd", opts.cwd, "ready", "hero image.png", "--quality", "70", "--review"],
+    opts,
+  );
+  expect(result.code).toBe(0);
+  expect(result.stderr).toContain("Ready preview: 1 file · 2 outputs");
+  expect(result.stderr).toContain('Create image: ".sv-ready/hero image.webp"');
+  expect(result.stderr).not.toContain("Suggested argv");
+  expect(result.stdout).toContain("Preview only; originals are preserved.");
+  expect(result.stdout).toContain("--quality 70");
+  expect(result.stdout).toContain("--review");
+  expect(result.stdout).toContain("--apply");
+  expect(result.stdout).toContain(`--cwd ${opts.cwd}`);
 });
