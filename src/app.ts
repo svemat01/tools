@@ -11,11 +11,13 @@ import { blog } from "./commands/blog/index.ts";
 import { dev } from "./commands/dev/index.ts";
 import { doctor } from "./commands/doctor.ts";
 import { gremlins } from "./commands/gremlins.ts";
+import { history } from "./commands/history.ts";
 import { img } from "./commands/img/index.ts";
 import { init } from "./commands/init.ts";
 import { inspect } from "./commands/inspect.ts";
 import { jwt } from "./commands/jwt/index.ts";
 import { tunnel } from "./commands/tunnel.ts";
+import { undo } from "./commands/undo.ts";
 import { video } from "./commands/video/index.ts";
 import { createContext } from "./context.ts";
 import { createApp, defineCommand } from "./kit/index.ts";
@@ -37,6 +39,8 @@ export const sv = defineCommand(
     inspect,
     doctor,
     init,
+    history,
+    undo,
   ),
   {
     // Bare `sv`: an overview for now; a natural home for an interactive menu later.

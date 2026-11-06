@@ -33,18 +33,18 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
 
 ## Commands
 
-| Group      | Commands                                 | Purpose                                                        |
-| ---------- | ---------------------------------------- | -------------------------------------------------------------- |
-| `inspect`  | —                                        | Read-only file metadata and bounded directory summaries        |
-| `doctor`   | —                                        | Check runtime, optional tools and project config               |
-| `init`     | —                                        | Preview and create a minimal project config                    |
+| Group      | Commands                                         | Purpose                                                               |
+| ---------- | ------------------------------------------------ | --------------------------------------------------------------------- |
+| `inspect`  | —                                                | Read-only file metadata and bounded directory summaries               |
+| `doctor`   | —                                                | Check runtime, optional tools and project config                      |
+| `init`     | —                                                | Preview and create a minimal project config                           |
 | `img`      | `web`, `og`, `resize`, `compare`, `info`, `tune` | Image conversion, covers, resizing, diffs, metadata and visual tuning |
-| `blog`     | `check`, `prepare`                       | Validate and safely prepare Markdown/MDX posts                 |
-| `video`    | `webm`                                   | Convert video to WebM/VP9                                      |
-| `gremlins` | —                                        | Find and fix invisible or suspicious Unicode                   |
-| `tunnel`   | —                                        | Expose a local port through a Cloudflare Quick Tunnel          |
-| `jwt`      | `decode`, `sign`, `verify`               | Inspect and work with JSON Web Tokens                          |
-| `dev`      | `echo`                                   | Small development helpers                                      |
+| `blog`     | `check`, `prepare`                               | Validate and safely prepare Markdown/MDX posts                        |
+| `video`    | `webm`                                           | Convert video to WebM/VP9                                             |
+| `gremlins` | —                                                | Find and fix invisible or suspicious Unicode                          |
+| `tunnel`   | —                                                | Expose a local port through a Cloudflare Quick Tunnel                 |
+| `jwt`      | `decode`, `sign`, `verify`                       | Inspect and work with JSON Web Tokens                                 |
+| `dev`      | `echo`                                           | Small development helpers                                             |
 
 Every command has `--help` with its options, `--json` where structured output helps, and predictable exit codes: `0` success, `1` runtime failure, `2` usage error. Destructive actions are opt-in and previewed first.
 
@@ -344,3 +344,22 @@ src/
   kit/               the Router + Tab integration (see docs/architecture.md)
 test/
 ```
+
+### File operation history and undo
+
+```bash
+sv img web photo.png --record --json  # includes recordId; preserves the input
+sv history                           # receipts for this canonical cwd
+sv history <id> --json
+sv undo last --dry-run --json         # validates every output, input and backup
+sv undo <id> --yes                    # delete created files; restore replacements
+sv undo <id> --yes --json             # JSON application always requires --yes
+```
+
+Recording is opt-in because replacement backups retain original file contents and receipts retain explicit file paths. Only `img web --record` uses this foundation today. It plans the whole batch before writing, reports the receipt id on stderr and in JSON, and leaves originals in place. Recorded conversion refuses an output equal to its source; choose a separate output. `--force --record` can replace a separate existing target and back it up. Dry runs and skipped conversions create no history. Other commands, including JWT and clipboard workflows, do not record anything.
+
+Version 1 receipts live under `$XDG_STATE_HOME/sv`, or `$HOME/.local/state/sv` (OS home fallback), partitioned by the SHA-256 of the canonical cwd. Running in a different directory selects different history; no project discovery is performed. State directories use mode 0700; backups and receipts use 0600. Created outputs are not duplicated in state. Only replacement originals are backed up. Receipts contain explicit operations, hashes, modes, timestamps and application/undo status; they never capture argv, environment or stdin. History reads and undo previews do not create state directories. There is no automatic retention policy yet.
+
+Undo previews before asking for confirmation. Noninteractive application requires `--yes`; `--dry-run` validates without mutation. Undo refuses the whole plan when an output or source changed, or a replacement backup is corrupt. It never recursively removes directories. Individual publications are atomic; multi-file plans and undo are **not transactions**. Cancellation or runtime failure retains a `partial` receipt with per-file progress. A crash during publication may leave `applying`; undo checks the actual bytes before proceeding. An interrupted `undoing` file requires manual inspection. The per-project lock serializes writers, waits up to two seconds, and fails closed on a stale lock; inspect the operation and remove the reported lock only when no writer is active. As with existing safe file writes, validation and publication have a small filesystem race window against unrelated concurrent writers; this is not an adversarial filesystem isolation mechanism.
+
+For future callers, `src/lib/operations.ts` exports `FileOperation` (`create` or `replace`), `executeFilePlan(plan, { cwd, env, signal?, projectRoot?, stateRoot? })`, `readHistory`, `getReceipt`, `undoOperation` and `contentHash`. Replacements require `expected` original bytes or a SHA-256 hash, and preserve original permissions. Optional input fingerprints protect source-dependent outputs. Duplicate/overlapping destinations and conflicts with other operations' inputs are rejected before content or state writes. `stateRoot` injects an exact sv state directory for tests/embedders; `projectRoot` permits future callers to share identity explicitly. Preflight errors throw; application errors return a durable `partial` receipt that callers must check.

@@ -1,3 +1,5 @@
+import { lstat, readFile } from "node:fs/promises";
+
 import { argument, cli, command, description, multiple, name, option, schema, toggle } from "@bomb.sh/router";
 import { z } from "zod";
 
@@ -12,6 +14,12 @@ import {
   normalizeFormat,
   transformImage,
 } from "../../lib/image.ts";
+import {
+  contentHash,
+  executeFilePlan,
+  type FileOperation,
+  type OperationReceipt,
+} from "../../lib/operations.ts";
 import { color, formatBytes, formatSavings, json, plural, useColor } from "../../lib/output.ts";
 
 interface WebResult {
@@ -71,6 +79,7 @@ export const web = defineCommand(
     ),
     toggle(name("keepSize"), description("Keep original dimensions when converting or re-encoding")),
     toggle(name("reencode"), description("Re-encode images already in the target format")),
+    toggle(name("record"), description("Record explicit outputs and replacement backups for sv undo")),
     toggle(name("force"), description("Overwrite existing output files")),
     toggle(name("dryRun"), description("Show what would be written without writing")),
     toggle(name("json"), description("Print machine-readable JSON")),
@@ -107,9 +116,32 @@ export const web = defineCommand(
       const format = model.format;
       const outputExtension = extensionForFormat(format);
       const reserved = new Set<string>();
+      const plan: FileOperation[] = [];
+      const publish = async (
+        input: string,
+        output: string,
+        bytes: Uint8Array,
+        source: Uint8Array,
+        expected: Buffer | undefined,
+      ) => {
+        if (model.dryRun) return;
+        context.signal.throwIfAborted();
+        if (!model.record) {
+          await writeFileAtomic(output, bytes, { overwrite: model.force });
+          return;
+        }
+        if (input === output) throw new Error("--record preserves originals; choose a separate output");
+        const inputs = [{ path: input, hash: contentHash(source) }];
+        plan.push(
+          expected === undefined
+            ? { kind: "create", path: output, bytes, inputs }
+            : { kind: "replace", path: output, bytes, expected, inputs },
+        );
+      };
       const batch = await runBatch(
         discovered.files,
         async (input): Promise<WebResult> => {
+          const source = model.record ? await readFile(input) : Buffer.alloc(0);
           const info = await inspectImage(input);
           const sourceFormat = normalizeFormat(info.format);
           const needsResize = !model.keepSize && info.width > model.width;
@@ -136,13 +168,25 @@ export const web = defineCommand(
             ...(model.out === undefined ? {} : { out: model.out }),
             ...(model.outDir === undefined ? {} : { outDir: model.outDir }),
           });
+          const expected =
+            model.record &&
+            model.force &&
+            (await lstat(output).then(
+              () => true,
+              (error: unknown) => {
+                if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+                throw error;
+              },
+            ))
+              ? await readFile(output)
+              : undefined;
           if (!needsResize && !needsReencode) {
             // Already in the target format: copy the bytes rather than
             // re-encoding and losing quality.
             if (!model.dryRun) {
               const bytes = await readFileBytes(input);
               context.signal.throwIfAborted();
-              await writeFileAtomic(output, bytes, { overwrite: model.force });
+              await publish(input, output, bytes, source, expected);
             }
             return {
               input,
@@ -160,7 +204,7 @@ export const web = defineCommand(
           });
           if (!model.dryRun) {
             context.signal.throwIfAborted();
-            await writeFileAtomic(output, result.data, { overwrite: model.force });
+            await publish(input, output, result.data, source, expected);
           }
           return {
             input,
@@ -181,6 +225,23 @@ export const web = defineCommand(
         },
       );
 
+      let receipt: OperationReceipt | undefined;
+      let recordError: string | undefined;
+      if (model.record && !model.dryRun && plan.length > 0) {
+        if (batch.failures.length > 0 || batch.aborted)
+          recordError = "Recording aborted before writing because image planning failed";
+        else {
+          for (const op of plan) context.stderr.write(`${op.kind} ${displayPath(context.cwd, op.path)}\n`);
+          try {
+            receipt = await executeFilePlan(plan, context);
+            if (receipt.status !== "applied") recordError = receipt.error ?? receipt.status;
+          } catch (error) {
+            recordError = error instanceof Error ? error.message : String(error);
+          }
+        }
+      }
+      if (receipt) context.stderr.write(`Operation: ${receipt.id} (${receipt.status})\n`);
+      if (recordError) context.stderr.write(`${recordError}\n`);
       for (const failure of batch.failures) {
         context.stderr.write(`${displayPath(context.cwd, failure.input)}: ${failure.error}\n`);
       }
@@ -190,6 +251,8 @@ export const web = defineCommand(
         context.stdout.write(
           json({
             command: "img web",
+            ...(receipt ? { recordId: receipt.id, recordStatus: receipt.status } : {}),
+            ...(recordError ? { recordError } : {}),
             dryRun: model.dryRun,
             files: batch.results.map((result) => ({
               input: displayPath(context.cwd, result.input),
@@ -240,7 +303,8 @@ export const web = defineCommand(
       }
 
       if (batch.aborted) context.stderr.write("aborted\n");
-      return batch.failures.length > 0 ||
+      return recordError !== undefined ||
+        batch.failures.length > 0 ||
         batch.aborted ||
         discovered.errors.length > 0 ||
         discovered.missing.length > 0 ||
