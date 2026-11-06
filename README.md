@@ -35,6 +35,7 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
 
 | Group      | Commands                                         | Purpose                                                               |
 | ---------- | ------------------------------------------------ | --------------------------------------------------------------------- |
+| `paste`    | —                                                | Private clipboard summary and explicit safe save                      |
 | `inspect`  | —                                                | Read-only file metadata and bounded directory summaries               |
 | `doctor`   | —                                                | Check runtime, optional tools and project config                      |
 | `init`     | —                                                | Preview and create a minimal project config                           |
@@ -363,3 +364,19 @@ Version 1 receipts live under `$XDG_STATE_HOME/sv`, or `$HOME/.local/state/sv` (
 Undo previews before asking for confirmation. Noninteractive application requires `--yes`; `--dry-run` validates without mutation. Undo refuses the whole plan when an output or source changed, or a replacement backup is corrupt. It never recursively removes directories. Individual publications are atomic; multi-file plans and undo are **not transactions**. Cancellation or runtime failure retains a `partial` receipt with per-file progress. A crash during publication may leave `applying`; undo checks the actual bytes before proceeding. An interrupted `undoing` file requires manual inspection. The per-project lock serializes writers, waits up to two seconds, and fails closed on a stale lock; inspect the operation and remove the reported lock only when no writer is active. As with existing safe file writes, validation and publication have a small filesystem race window against unrelated concurrent writers; this is not an adversarial filesystem isolation mechanism.
 
 For future callers, `src/lib/operations.ts` exports `FileOperation` (`create` or `replace`), `executeFilePlan(plan, { cwd, env, signal?, projectRoot?, stateRoot? })`, `readHistory`, `getReceipt`, `undoOperation` and `contentHash`. Replacements require `expected` original bytes or a SHA-256 hash, and preserve original permissions. Optional input fingerprints protect source-dependent outputs. Duplicate/overlapping destinations and conflicts with other operations' inputs are rejected before content or state writes. `stateRoot` injects an exact sv state directory for tests/embedders; `projectRoot` permits future callers to share identity explicitly. Preflight errors throw; application errors return a durable `partial` receipt that callers must check.
+
+### Clipboard input
+
+```bash
+sv paste --json                        # metadata only; no clipboard text is printed
+sv paste --out clipboard.png --yes     # save PNG bytes without overwriting
+sv --cwd ./notes paste --out clip.txt --yes --json
+```
+
+`paste` explicitly reads the clipboard and classifies PNG images, JWT-shaped text, readable path lists (up to 256 entries), HTTP(S) URLs and generic text. Summaries omit clipboard text, paths, URL contents and tokens; suggested commands use placeholders. JWT detection does not decode or verify a token. Path classification checks local readability only and never executes a path or follows a URL over the network. No models, history receipts or backups are involved.
+
+`--out` previews the absolute destination on stderr and asks for confirmation. Noninteractive saves and JSON saves require `--yes`. Saves preserve the exact selected bytes, leave the clipboard intact, use private file permissions (0600), and atomically refuse an existing destination, including symlinks. PNG output must end in `.png`; text cannot be saved under a known image extension. There is no implicit conversion. Read-only summaries write no files.
+
+Readers use available native tools: `pbpaste` on macOS (text only), `wl-paste` on Wayland (preferred in a Wayland session), `xclip` on X11 (text/PNG), `xsel` (text only), or `powershell.exe` on Windows/WSL (text only). No GUI package is required by sv. Missing tools and failed desktop access produce actionable errors. PNG is preferred over a text representation when advertised; other advertised image formats are explicitly unsupported. Empty/text-incompatible selections on text-only backends are rejected; use a PNG-capable reader for image input. No clipboard data is interpolated into shell commands or child diagnostics.
+
+For future consumers, `readClipboard({ env?, signal?, maxBytes?, timeoutMs?, platform?, find?, run? })` in `src/lib/clipboard.ts` returns a discriminated `text`/`image` payload with bytes and MIME type, plus decoded text or PNG dimensions. `ClipboardError.code` distinguishes unavailable readers, desktop access, cancellation, timeout, byte limits, unsupported formats and invalid PNG data. Defaults are 16 MiB and a 3-second process deadline shared across negotiation and reading; listings are capped at 64 KiB. PNG validation also decodes with a 16 million pixel limit and checks cancellation afterward (native image decoding is not instantly interruptible). The injectable finder/byte runner supports isolated tests; runners must honor their supplied signal and limit. Existing `copyToClipboard()` callers are unchanged.

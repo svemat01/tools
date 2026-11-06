@@ -16,6 +16,7 @@ import { img } from "./commands/img/index.ts";
 import { init } from "./commands/init.ts";
 import { inspect } from "./commands/inspect.ts";
 import { jwt } from "./commands/jwt/index.ts";
+import { paste } from "./commands/paste.ts";
 import { tunnel } from "./commands/tunnel.ts";
 import { undo } from "./commands/undo.ts";
 import { video } from "./commands/video/index.ts";
@@ -37,6 +38,7 @@ export const sv = defineCommand(
     jwt,
     dev,
     inspect,
+    paste,
     doctor,
     init,
     history,
