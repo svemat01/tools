@@ -86,6 +86,9 @@ export const webm = defineCommand(
         extensions: [...VIDEO_EXTENSIONS],
         respectGitIgnore: true,
       });
+      for (const failure of discovered.errors) {
+        context.stderr.write(`${displayPath(context.cwd, failure.path)}: ${failure.error}\n`);
+      }
       for (const path of discovered.missing)
         context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
       for (const path of discovered.unsupported) {
@@ -96,6 +99,7 @@ export const webm = defineCommand(
       }
       if (discovered.files.length === 0) throw new Error("No supported videos found");
 
+      const reserved = new Set<string>();
       const batch = await runBatch(
         discovered.files,
         (input): Promise<WebmResult> =>
@@ -112,6 +116,7 @@ export const webm = defineCommand(
             {
               cwd: context.cwd,
               overwrite: model.force,
+              reserved,
               ...(model.out === undefined ? {} : { out: model.out }),
               ...(model.outDir === undefined ? {} : { outDir: model.outDir }),
             },
@@ -189,6 +194,7 @@ export const webm = defineCommand(
       if (batch.aborted) context.stderr.write("aborted\n");
       return batch.failures.length > 0 ||
         batch.aborted ||
+        discovered.errors.length > 0 ||
         discovered.missing.length > 0 ||
         discovered.unsupported.length > 0
         ? 1

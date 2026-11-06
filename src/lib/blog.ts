@@ -7,37 +7,37 @@
  */
 
 import { existsSync } from "node:fs";
-import { readdir, rm, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { z } from "zod";
 
-import {
-  discoverFiles,
-  displayPath,
-  encodeTextFile,
-  fileSize,
-  planOutputPath,
-  readFileBytes,
-  readTextFile,
-  type TextFile,
-  writeFileAtomic,
-} from "./fs.ts";
-import { extensionForFormat, type ImageFormat, normalizeFormat, transformImage } from "./image.ts";
+import { artifactEdits, findNotionArtifacts } from "./blog-artifacts.ts";
+import { decodeURIComponentSafe, inferProjectRoot, localReferencePath } from "./blog-paths.ts";
+import { discoverFiles, fileSize, readTextFile, type TextFile } from "./fs.ts";
 import {
   applyEdits,
   extractFrontmatter,
   isExternalUrl,
-  type MarkdownReference,
-  normalizeBlankLines,
   parseMarkdown,
   splitUrlSuffix,
   stripTrackingParameters,
-  type TextEdit,
-  toUrlPath,
-  urlEdit,
 } from "./markdown.ts";
-import { fixText, scanText } from "./unicode.ts";
+import { scanText } from "./unicode.ts";
+
+export {
+  applyBlogPrepare,
+  applyBlogPreparePlans,
+  createPrepareSession,
+  planBlogPrepare,
+  PrepareApplyError,
+  type PlannedEdit,
+  type PlannedImage,
+  type PrepareOptions,
+  type PreparePlan,
+  type PrepareResult,
+  type PrepareSession,
+} from "./blog-prepare.ts";
 
 export interface BlogChecks {
   readonly metadata: boolean;
@@ -255,20 +255,6 @@ export interface BlogProject {
   readonly posts: readonly BlogPost[];
 }
 
-function inferProjectRoot(postRoot: string, config: BlogConfig): string {
-  const parent = dirname(postRoot);
-  const postsDir = config.postsDir.replace(/[\\/]+$/, "");
-  const nativePostsDir = isAbsolute(postsDir)
-    ? resolve(postsDir)
-    : postsDir.split(/[\\/]/).filter(Boolean).join(sep);
-  if (!nativePostsDir) return postRoot;
-  if (parent === nativePostsDir || parent.endsWith(`${sep}${nativePostsDir}`)) {
-    if (isAbsolute(postsDir)) return dirname(nativePostsDir);
-    return parent.slice(0, parent.length - nativePostsDir.length).replace(/[\\/]+$/, "") || sep;
-  }
-  return postRoot;
-}
-
 function findEntry(directory: string, config: BlogConfig): string | undefined {
   for (const candidate of config.entries) {
     const path = join(directory, candidate);
@@ -318,7 +304,16 @@ export async function resolveBlogProject(
     };
   }
 
-  const postsDirectory = basename(path) === config.postsDir ? path : join(path, config.postsDir);
+  const configuredPosts = config.postsDir
+    .replace(/[\\/]+$/, "")
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .join(sep);
+  const isPostsDirectory = isAbsolute(config.postsDir)
+    ? path === resolve(config.postsDir)
+    : path.endsWith(`${sep}${configuredPosts}`);
+  const projectRoot = isPostsDirectory ? inferProjectRoot(join(path, "__post__"), config) : path;
+  const postsDirectory = isPostsDirectory ? path : resolve(path, config.postsDir);
   if (!existsSync(postsDirectory)) {
     throw new Error(
       `No post entry (${config.entries.join(", ")}) or ${config.postsDir}/ directory found under ${target}`,
@@ -336,12 +331,12 @@ export async function resolveBlogProject(
     posts.push({
       root,
       entry: postEntry,
-      projectRoot: path,
+      projectRoot,
       name: entry.name,
     });
   }
 
-  return { kind: "project", projectRoot: path, posts };
+  return { kind: "project", projectRoot, posts };
 }
 
 export interface BlogIssue {
@@ -351,56 +346,6 @@ export interface BlogIssue {
   readonly file: string;
   readonly line?: number;
   readonly column?: number;
-}
-
-interface NotionArtifact {
-  readonly start: number;
-  readonly end: number;
-  readonly text: string;
-  readonly line: number;
-}
-
-/**
- * Find Notion export artifacts before parsing. MDX treats HTML comments as
- * syntax errors, so removing them first lets the rest of the post be checked
- * (and is exactly what `prepare` does when it rewrites the file).
- */
-function findNotionArtifacts(source: string): NotionArtifact[] {
-  const artifacts: NotionArtifact[] = [];
-  const patterns = [
-    /<!--\s*notionvc:[\s\S]*?-->/gi,
-    /<empty-block\s*\/>/gi,
-    /<empty-block>\s*<\/empty-block>/gi,
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      if (match.index === undefined) continue;
-      artifacts.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        text: match[0],
-        line: lineAt(source, match.index),
-      });
-    }
-  }
-  return artifacts.sort((a, b) => a.start - b.start);
-}
-
-function lineAt(source: string, offset: number): number {
-  let line = 1;
-  for (let index = 0; index < offset; index++) {
-    if (source[index] === "\n") line++;
-  }
-  return line;
-}
-
-function artifactEdits(artifacts: readonly NotionArtifact[]): TextEdit[] {
-  return artifacts.map((artifact) => ({
-    start: artifact.start,
-    end: artifact.end,
-    replacement: "",
-    reason: "remove Notion export artifact",
-  }));
 }
 
 export interface PostMetadata {
@@ -588,7 +533,7 @@ async function checkPost(
     }
   }
 
-  const artifacts = findNotionArtifacts(file.text);
+  const artifacts = findNotionArtifacts(file.text, post.entry);
   if (config.checks.markdown) {
     for (const artifact of artifacts) {
       issues.push({
@@ -780,336 +725,6 @@ async function checkPost(
 
   void options;
   return issues;
-}
-
-function decodeURIComponentSafe(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function localReferencePath(
-  post: BlogPost,
-  project: BlogProject,
-  config: BlogConfig,
-  urlPath: string,
-): string | undefined {
-  if (!urlPath) return undefined;
-  if (urlPath.startsWith("/")) {
-    return config.publicDir
-      ? join(project.projectRoot, config.publicDir, urlPath.slice(1))
-      : join(project.projectRoot, urlPath.slice(1));
-  }
-  return join(post.root, urlPath);
-}
-
-export interface PlannedImage {
-  readonly input: string;
-  readonly output: string;
-  readonly action: "convert" | "optimize";
-  readonly before: number;
-  readonly after: number;
-  readonly width: number;
-  readonly height: number;
-  readonly format: ImageFormat;
-  readonly reference: string;
-  readonly nextUrl: string;
-  readonly data: Uint8Array;
-}
-
-export interface PlannedEdit {
-  readonly reason: string;
-  readonly line?: number;
-  readonly before?: string;
-  readonly after?: string;
-}
-
-export interface PreparePlan {
-  readonly post: BlogPost;
-  readonly entry: string;
-  readonly original: string;
-  readonly prepared: string;
-  readonly edits: readonly PlannedEdit[];
-  readonly images: readonly PlannedImage[];
-  readonly unicodeReplacements: number;
-  readonly collapsedBlankLines: number;
-  readonly changed: boolean;
-}
-
-export interface PrepareOptions {
-  readonly cwd: string;
-  readonly dryRun?: boolean;
-  readonly noImages?: boolean;
-  readonly noUnicode?: boolean;
-}
-
-export async function planBlogPrepare(
-  post: BlogPost,
-  config: BlogConfig,
-  options: PrepareOptions,
-): Promise<PreparePlan> {
-  const file = await readTextFile(post.entry);
-  const edits: PlannedEdit[] = [];
-  const textEdits: TextEdit[] = [];
-  const artifactList = config.prepare.notion ? findNotionArtifacts(file.text) : [];
-  const artifacts = artifactEdits(artifactList);
-  const source = artifacts.length > 0 ? applyEdits(file.text, artifacts) : file.text;
-
-  for (const artifact of artifactList) {
-    edits.push({
-      reason: "remove Notion export artifact",
-      line: artifact.line,
-      before: artifact.text.slice(0, 120),
-    });
-  }
-
-  const parsed = parseMarkdown(source, post.entry);
-  if (parsed.parseError) throw new Error(`Cannot prepare ${post.entry}: ${parsed.parseError}`);
-
-  const images: PlannedImage[] = [];
-  const imageByInput = new Map<string, PlannedImage>();
-  const imageForReference = new Map<MarkdownReference, PlannedImage>();
-  const usedOutputs = new Set<string>();
-
-  if (config.prepare.optimizeImages && !options.noImages) {
-    for (const reference of parsed.references) {
-      if (isExternalUrl(reference.url)) continue;
-      const { path: urlPath } = splitUrlSuffix(reference.url);
-      if (!urlPath) continue;
-      const absolute = localReferencePath(
-        post,
-        { kind: "post", projectRoot: post.projectRoot, posts: [post] },
-        config,
-        decodeURIComponentSafe(urlPath),
-      );
-      if (!absolute || !existsSync(absolute)) continue;
-      const extension = absolute.split(".").pop()?.toLowerCase() ?? "";
-      if (!["png", "jpg", "jpeg", "webp", "avif", "gif", "svg"].includes(extension)) continue;
-
-      let image = imageByInput.get(absolute);
-      if (!image) {
-        image = await planImage(absolute, post, config, usedOutputs);
-        if (!image) continue;
-        imageByInput.set(absolute, image);
-        images.push(image);
-      }
-      imageForReference.set(reference, image);
-    }
-  }
-
-  // One edit per reference: image rewriting and tracking-parameter removal
-  // must compose, not overlap.
-  for (const reference of parsed.references) {
-    let nextUrl = reference.url;
-    const image = imageForReference.get(reference);
-    if (image) {
-      const { suffix } = splitUrlSuffix(reference.url);
-      nextUrl = `${imageUrlForReference(reference.url, image, post, config)}${suffix}`;
-    }
-    let removed: readonly string[] = [];
-    if (config.prepare.stripTracking) {
-      const stripped = stripTrackingParameters(nextUrl);
-      nextUrl = stripped.url;
-      removed = stripped.removed;
-    }
-    if (nextUrl === reference.url) continue;
-    const edit = urlEdit(source, reference, nextUrl);
-    if (!edit) continue;
-    textEdits.push(edit);
-    const reasons: string[] = [];
-    if (image) {
-      reasons.push(
-        `optimize image ${displayPath(options.cwd, image.input)} → ${displayPath(options.cwd, image.output)}`,
-      );
-    }
-    if (removed.length > 0) reasons.push(`remove tracking parameters (${removed.join(", ")})`);
-    edits.push({
-      reason: reasons.join("; "),
-      line: reference.line,
-      before: reference.url,
-      after: nextUrl,
-    });
-  }
-
-  let text = textEdits.length > 0 ? applyEdits(source, textEdits) : source;
-  let unicodeReplacements = 0;
-  if (config.prepare.fixUnicode && !options.noUnicode) {
-    const fixed = fixText(text, { typography: config.prepare.typography });
-    text = fixed.text;
-    unicodeReplacements = fixed.replacements;
-    if (unicodeReplacements > 0) {
-      edits.push({ reason: `replace ${unicodeReplacements} invisible or typographic character(s)` });
-    }
-  }
-
-  let collapsedBlankLines = 0;
-  if (config.prepare.normalizeMarkdown) {
-    const normalized = normalizeBlankLines(text);
-    text = normalized.text;
-    collapsedBlankLines = normalized.collapsedBlankLines;
-    if (normalized.changed) {
-      edits.push({ reason: "normalize blank lines and trailing newline" });
-    }
-  }
-
-  return {
-    post,
-    entry: post.entry,
-    original: file.text,
-    prepared: text,
-    edits,
-    images,
-    unicodeReplacements,
-    collapsedBlankLines,
-    changed: text !== file.text || images.length > 0,
-  };
-}
-
-function imageUrlForReference(
-  referenceUrl: string,
-  image: PlannedImage,
-  post: BlogPost,
-  config: BlogConfig,
-): string {
-  if (!referenceUrl.startsWith("/")) return image.nextUrl;
-  const base = config.publicDir ? join(post.projectRoot, config.publicDir) : post.projectRoot;
-  return `/${toUrlPath(relative(base, image.output))}`;
-}
-
-async function planImage(
-  input: string,
-  post: BlogPost,
-  config: BlogConfig,
-  usedOutputs: Set<string>,
-): Promise<PlannedImage | undefined> {
-  const inputExtension = input.split(".").pop()?.toLowerCase() ?? "";
-  const requested = config.prepare.imageFormat === "webp" ? "webp" : normalizeFormat(inputExtension);
-  if (!requested) return undefined;
-  // Do not create a chain of `-optimized` copies on repeated prepares.
-  const sameFormat =
-    config.prepare.imageFormat === "webp" ? inputExtension === "webp" : requested === inputExtension;
-  if (sameFormat && basename(input, extname(input)).endsWith("-optimized")) return undefined;
-
-  const before = await fileSize(input);
-  let output: string;
-  if (config.prepare.imageFormat === "webp" && inputExtension !== "webp") {
-    output = await planOutputPath({
-      input,
-      cwd: post.root,
-      extension: "webp",
-      overwrite: false,
-    });
-  } else if (config.prepare.imageFormat === "webp" && inputExtension === "webp") {
-    // Already WebP: only re-encode when resizing would help.
-    output = await planOutputPath({
-      input,
-      cwd: post.root,
-      extension: "webp",
-      suffix: "-optimized",
-      overwrite: false,
-    });
-  } else {
-    output = await planOutputPath({
-      input,
-      cwd: post.root,
-      extension: extensionForFormat(requested),
-      suffix: "-optimized",
-      overwrite: false,
-    });
-  }
-  output = reserve(output, usedOutputs);
-
-  const result = await transformImage(input, {
-    resize: { width: config.prepare.imageWidth, withoutEnlargement: true },
-    encode: {
-      format: requested,
-      quality: config.prepare.imageQuality,
-      ...(requested === "png" ? { palette: true } : {}),
-    },
-  });
-
-  // A same-format optimization that makes the file larger is not useful.
-  if (config.prepare.imageFormat === "keep" && result.bytes >= before) return undefined;
-  if (config.prepare.imageFormat === "webp" && inputExtension === "webp" && result.bytes >= before) {
-    return undefined;
-  }
-
-  const relativeUrl = toUrlPath(relative(post.root, output));
-  return {
-    input,
-    output,
-    action: config.prepare.imageFormat === "webp" && inputExtension !== "webp" ? "convert" : "optimize",
-    before,
-    after: result.bytes,
-    width: result.width,
-    height: result.height,
-    format: result.format,
-    reference: input,
-    nextUrl: relativeUrl,
-    data: result.data,
-  };
-}
-
-function reserve(desired: string, used: Set<string>): string {
-  if (!used.has(desired) && !existsSync(desired)) {
-    used.add(desired);
-    return desired;
-  }
-  const directory = dirname(desired);
-  const extension = extname(desired);
-  const stem = basename(desired, extension);
-  for (let counter = 1; counter < 10_000; counter++) {
-    const candidate = join(directory, `${stem}-${counter}${extension}`);
-    if (!used.has(candidate) && !existsSync(candidate)) {
-      used.add(candidate);
-      return candidate;
-    }
-  }
-  throw new Error(`Could not reserve an output name for ${desired}`);
-}
-
-export interface PrepareResult {
-  readonly plan: PreparePlan;
-  readonly writtenImages: readonly string[];
-  readonly deletedOriginals: readonly string[];
-}
-
-export async function applyBlogPrepare(plan: PreparePlan, config: BlogConfig): Promise<PrepareResult> {
-  const file = await readTextFile(plan.entry);
-  if (file.text !== plan.original) {
-    throw new Error(`${plan.entry} changed after planning; re-run blog prepare`);
-  }
-
-  const writtenImages: string[] = [];
-  for (const image of plan.images) {
-    if (existsSync(image.output)) {
-      const existing = await readFileBytes(image.output);
-      if (existing.equals(image.data)) {
-        writtenImages.push(image.output);
-        continue;
-      }
-      throw new Error(`${image.output} appeared after planning; re-run blog prepare`);
-    }
-    await writeFileAtomic(image.output, image.data);
-    writtenImages.push(image.output);
-  }
-
-  if (plan.prepared !== file.text) {
-    await writeFileAtomic(plan.entry, encodeTextFile(file, plan.prepared));
-  }
-
-  const deletedOriginals: string[] = [];
-  if (config.prepare.deleteOriginals) {
-    for (const image of plan.images) {
-      if (image.output === image.input) continue;
-      await rm(image.input, { force: true });
-      deletedOriginals.push(image.input);
-    }
-  }
-
-  return { plan, writtenImages, deletedOriginals };
 }
 
 /** Read referenced media for the check command without treating them as posts. */

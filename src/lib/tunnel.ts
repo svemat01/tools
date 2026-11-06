@@ -21,6 +21,7 @@ export function cloudflaredArgs(port: number, host = "localhost"): string[] {
 
 export interface TunnelOptions {
   readonly port: number;
+  readonly host?: string;
   readonly name?: string;
   readonly copy?: boolean;
   readonly json?: boolean;
@@ -61,6 +62,7 @@ async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<st
 }
 
 export async function startTunnel(options: TunnelOptions): Promise<TunnelResult> {
+  options.signal.throwIfAborted();
   const binary = findBinary("cloudflared", options.env);
   if (!binary) {
     throw new Error(
@@ -71,11 +73,11 @@ export async function startTunnel(options: TunnelOptions): Promise<TunnelResult>
 
   const label = options.name ? ` "${options.name}"` : "";
   options.stderr.write(
-    `warning: a public tunnel${label} will expose http://localhost:${options.port} to anyone with the URL.\n` +
+    `warning: a public tunnel${label} will expose http://${options.host ?? "localhost"}:${options.port} to anyone with the URL.\n` +
       "         Stop it with Ctrl+C when you are done.\n",
   );
 
-  const child = Bun.spawn([binary, ...cloudflaredArgs(options.port)], {
+  const child = Bun.spawn([binary, ...cloudflaredArgs(options.port, options.host)], {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     stdin: "ignore",
@@ -93,6 +95,7 @@ export async function startTunnel(options: TunnelOptions): Promise<TunnelResult>
     }
   };
   options.signal.addEventListener("abort", abort, { once: true });
+  if (options.signal.aborted) abort();
 
   const handleLine = async (line: string): Promise<void> => {
     if (!line) return;
@@ -100,7 +103,7 @@ export async function startTunnel(options: TunnelOptions): Promise<TunnelResult>
       const found = findTunnelUrl(line);
       if (found) {
         url = found;
-        if (!options.json) options.stdout.write(`\n  ${found}\n\n`);
+        options.stdout.write(options.json ? `${JSON.stringify({ url: found })}\n` : `\n  ${found}\n\n`);
         if (options.copy && options.copyUrl) {
           copied = await options.copyUrl(found);
           options.stderr.write(
@@ -126,7 +129,6 @@ export async function startTunnel(options: TunnelOptions): Promise<TunnelResult>
     if (!url) {
       throw new Error(`cloudflared exited (code ${code}) before publishing a public URL`);
     }
-    if (options.json) options.stdout.write(`${JSON.stringify({ url })}\n`);
     return { url, code: options.signal.aborted ? 0 : code === 0 ? 0 : 1, copied };
   } finally {
     options.signal.removeEventListener("abort", abort);

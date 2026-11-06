@@ -45,7 +45,7 @@ export async function runBatch<I, R>(
     }
   }
 
-  return { results, failures, aborted };
+  return { results, failures, aborted: aborted || options.signal?.aborted === true };
 }
 
 /** Totals used by the shared media summary. */

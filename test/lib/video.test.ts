@@ -77,6 +77,25 @@ describe("targetDimensions", () => {
     expect(dimensions?.width).toBe(500);
     expect(dimensions?.height).toBe(500);
   });
+
+  test("never rounds beyond odd maximum dimensions", () => {
+    const dimensions = targetDimensions({ width: 1920, height: 1080, hasAudio: false }, 1001, 563);
+    expect(dimensions?.width).toBeLessThanOrEqual(1001);
+    expect(dimensions?.height).toBeLessThanOrEqual(563);
+    expect((dimensions?.width ?? 1) % 2).toBe(0);
+    expect((dimensions?.height ?? 1) % 2).toBe(0);
+  });
+
+  test("rounds odd source dimensions down without upscaling", () => {
+    expect(targetDimensions({ width: 801, height: 601, hasAudio: false }, 1920)).toEqual({
+      width: 800,
+      height: 600,
+    });
+  });
+
+  test("rejects limits too small for even output dimensions", () => {
+    expect(() => targetDimensions({ width: 100, height: 100, hasAudio: false }, 1)).toThrow("at least 2");
+  });
 });
 
 describe("buildWebmArgs", () => {

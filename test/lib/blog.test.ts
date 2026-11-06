@@ -5,15 +5,20 @@ import { join } from "node:path";
 
 import sharp from "sharp";
 
+import { prepare } from "../../src/commands/blog/prepare.ts";
+import { createApp } from "../../src/kit/index.ts";
 import {
   applyBlogPrepare,
+  applyBlogPreparePlans,
   checkBlog,
+  createPrepareSession,
   DEFAULT_BLOG_CONFIG,
   loadBlogConfig,
   planBlogPrepare,
   resolveBlogConfig,
   resolveBlogProject,
 } from "../../src/lib/blog.ts";
+import { capture } from "../support/io.ts";
 
 const directories: string[] = [];
 
@@ -295,5 +300,182 @@ describe("planBlogPrepare and applyBlogPrepare", () => {
     const project = await resolveBlogProject(root, root, config);
     const plan = await planBlogPrepare(project.posts[0]!, config, { cwd: root });
     expect(plan.prepared).toContain("(/images/cover.webp)");
+  });
+});
+
+describe("prepare safety regressions", () => {
+  test("uses the same root from the project or nested posts directory", async () => {
+    const root = await temporary();
+    const posts = join(root, "content", "posts");
+    await mkdir(join(posts, "hello"), { recursive: true });
+    await writeFile(join(posts, "hello", "index.md"), "# Hello\n");
+    const config = resolveBlogConfig({ postsDir: "content/posts" });
+    const fromRoot = await resolveBlogProject(root, root, config);
+    const fromPosts = await resolveBlogProject(posts, root, config);
+    expect(fromPosts).toEqual(fromRoot);
+    expect(fromPosts.posts[0]?.projectRoot).toBe(root);
+  });
+
+  test("shows the full preview before confirmation and leaves files untouched on refusal", async () => {
+    const root = await createProject();
+    const stdout = capture();
+    const stderr = capture();
+    const entry = join(root, "posts", "hello", "readme.mdx");
+    const original = await readFile(entry, "utf8");
+    let prompted = false;
+    const app = createApp(prepare, {
+      context: (base) => ({
+        ...base,
+        log: { info() {}, debug() {} },
+        readStdin: async () => "",
+        async confirm() {
+          prompted = true;
+          expect(stdout.text).toContain("remove Notion export artifact");
+          expect(stdout.text).toContain("cover.webp");
+          expect(await readFile(entry, "utf8")).toBe(original);
+          expect(await Bun.file(join(root, "posts", "hello", "cover.webp")).exists()).toBe(false);
+          return false;
+        },
+      }),
+    });
+    expect(await app.run([root], { cwd: root, stdout, stderr })).toBe(1);
+    expect(prompted).toBe(true);
+    expect(await readFile(entry, "utf8")).toBe(original);
+  });
+
+  test("keeps literal Notion markers and invisible characters inside code", async () => {
+    const root = await temporary();
+    const entry = join(root, "index.mdx");
+    const literal = "<!-- notionvc: example -->\n<empty-block />\nconst text = 'x\u200by';";
+    await writeFile(entry, `# Example\n\n\`\`\`html\n${literal}\n\`\`\`\n\nProse\u200b text.\n`);
+    const config = resolveBlogConfig();
+    const project = await resolveBlogProject(entry, root, config);
+    const plan = await planBlogPrepare(project.posts[0]!, config, { cwd: root });
+    expect(plan.prepared).toContain(literal);
+    expect(plan.prepared).toContain("Prose text.");
+    expect(plan.unicodeReplacements).toBe(1);
+  });
+
+  test("refuses changed image sources before publishing anything", async () => {
+    const root = await createProject();
+    const { config } = await loadBlogConfig(root);
+    const project = await resolveBlogProject(root, root, config);
+    const plan = await planBlogPrepare(project.posts[0]!, config, { cwd: root });
+    await writeFile(plan.images[0]!.input, "changed source");
+    await expect(applyBlogPrepare(plan, config)).rejects.toThrow("changed after planning");
+    expect(await Bun.file(plan.images[0]!.output).exists()).toBe(false);
+    expect(await readFile(plan.entry, "utf8")).toBe(plan.original);
+  });
+
+  test("preflights all entries before the first write", async () => {
+    const root = await createProject();
+    const { config } = await loadBlogConfig(root);
+    const first = (await resolveBlogProject(root, root, config)).posts[0]!;
+    const secondRoot = join(root, "posts", "second");
+    await mkdir(secondRoot);
+    const secondEntry = join(secondRoot, "readme.mdx");
+    await writeFile(secondEntry, "Second\u200b post.\n");
+    const second = (await resolveBlogProject(secondEntry, root, config)).posts[0]!;
+    const session = createPrepareSession();
+    const plans = await Promise.all(
+      [first, second].map((post) => planBlogPrepare(post, config, { cwd: root, session })),
+    );
+    await writeFile(secondEntry, "user edits\n");
+    await expect(applyBlogPreparePlans(plans, config)).rejects.toThrow("changed after planning");
+    expect(await readFile(first.entry, "utf8")).toBe(plans[0]!.original);
+    expect(await Bun.file(plans[0]!.images[0]!.output).exists()).toBe(false);
+  });
+
+  test("deduplicates a shared image and retains public originals", async () => {
+    const root = await createProject();
+    await mkdir(join(root, "public"));
+    await mkdir(join(root, "posts", "second"));
+    await sharp({ create: { width: 100, height: 100, channels: 3, background: "red" } })
+      .png()
+      .toFile(join(root, "public", "shared.png"));
+    for (const name of ["hello", "second"]) {
+      await writeFile(join(root, "posts", name, "readme.mdx"), `# ${name}\n\n![shared](/shared.png)\n`);
+    }
+    const config = resolveBlogConfig({
+      entries: ["readme.mdx"],
+      publicDir: "public",
+      prepare: { deleteOriginals: true },
+    });
+    const project = await resolveBlogProject(root, root, config);
+    const session = createPrepareSession();
+    const plans = [];
+    for (const post of project.posts) plans.push(await planBlogPrepare(post, config, { cwd: root, session }));
+    expect(plans[0]!.images[0]!.output).toBe(plans[1]!.images[0]!.output);
+    expect(plans[0]!.images[0]!.data).toBe(plans[1]!.images[0]!.data);
+    const results = await applyBlogPreparePlans(plans, config);
+    expect(results.flatMap((result) => result.deletedOriginals)).toEqual([]);
+    expect(results[0]!.retainedOriginals[0]!.reason).toContain("shared or public");
+    expect(await Bun.file(join(root, "public", "shared.png")).exists()).toBe(true);
+    for (const plan of plans) expect(await readFile(plan.entry, "utf8")).toContain("/shared.webp");
+  });
+
+  test("retains a post-local original referenced by unselected metadata", async () => {
+    const root = await createProject();
+    const loaded = await loadBlogConfig(root);
+    const config = { ...loaded.config, prepare: { ...loaded.config.prepare, deleteOriginals: true } };
+    const project = await resolveBlogProject(root, root, config);
+    await writeFile(join(root, "posts", "hello", "meta.json"), JSON.stringify({ cover: "./cover.png" }));
+    const plan = await planBlogPrepare(project.posts[0]!, config, { cwd: root });
+    const result = await applyBlogPrepare(plan, config);
+    expect(result.deletedOriginals).toEqual([]);
+    expect(result.retainedOriginals[0]!.reason).toContain("meta.json");
+    expect(await Bun.file(plan.images[0]!.input).exists()).toBe(true);
+  });
+
+  test("never deletes an image whose destination cannot be rewritten", async () => {
+    const root = await createProject();
+    const loaded = await loadBlogConfig(root);
+    const config = { ...loaded.config, prepare: { ...loaded.config.prepare, deleteOriginals: true } };
+    const project = await resolveBlogProject(root, root, config);
+    await writeFile(project.posts[0]!.entry, "# Example\n\n![cover](cover\\.png)\n");
+    const plan = await planBlogPrepare(project.posts[0]!, config, { cwd: root });
+    expect(plan.images).toEqual([]);
+    await applyBlogPrepare(plan, config);
+    expect(await Bun.file(join(root, "posts", "hello", "cover.png")).exists()).toBe(true);
+  });
+  test("rewrites shared relative image paths for each post independently", async () => {
+    const root = await createProject();
+    await mkdir(join(root, "posts", "second"));
+    await writeFile(
+      join(root, "posts", "second", "readme.mdx"),
+      "# Second\n\n![cover](../hello/cover.png)\n",
+    );
+    const { config } = await loadBlogConfig(root);
+    const project = await resolveBlogProject(root, root, config);
+    const session = createPrepareSession();
+    const plans = [];
+    for (const post of project.posts) plans.push(await planBlogPrepare(post, config, { cwd: root, session }));
+    expect(plans[0]!.prepared).toContain("(cover.webp)");
+    expect(plans[1]!.prepared).toContain("(../hello/cover.webp)");
+    expect(plans[0]!.images[0]!.output).toBe(plans[1]!.images[0]!.output);
+    await applyBlogPreparePlans(plans, config);
+    expect(await readFile(plans[1]!.entry, "utf8")).toContain("(../hello/cover.webp)");
+  });
+
+  test("returns an inspectable JSON plan when --yes is missing", async () => {
+    const root = await createProject();
+    const stdout = capture();
+    const stderr = capture();
+    const app = createApp(prepare, {
+      context: (base) => ({
+        ...base,
+        log: { info() {}, debug() {} },
+        readStdin: async () => "",
+        async confirm() {
+          throw new Error("JSON mode must not prompt");
+        },
+      }),
+    });
+    expect(await app.run([root, "--json"], { cwd: root, stdout, stderr })).toBe(1);
+    const result = JSON.parse(stdout.text);
+    expect(result.applied).toBe(false);
+    expect(result.error).toContain("--yes");
+    expect(result.posts).toHaveLength(1);
+    expect(await Bun.file(join(root, "posts", "hello", "cover.webp")).exists()).toBe(false);
   });
 });

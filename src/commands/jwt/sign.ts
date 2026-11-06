@@ -88,7 +88,11 @@ export const sign = defineCommand(
         ...(model.secretFile === undefined ? {} : { secretFile: model.secretFile }),
         secretStdin: model.secretStdin,
       });
-      const secret = await readSecret(source, { env: context.env, cwd: context.cwd });
+      const secret = await readSecret(source, {
+        env: context.env,
+        cwd: context.cwd,
+        readStdin: context.readStdin,
+      });
       const payload = await readPayload(
         {
           ...(model.payload === undefined ? {} : { payload: model.payload }),

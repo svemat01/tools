@@ -29,6 +29,7 @@ export const tunnel = defineCommand(
     async run({ model }, context: AppContext) {
       const result = await startTunnel({
         port: model.port,
+        host: model.host,
         ...(model.name === undefined ? {} : { name: model.name }),
         copy: model.copy,
         json: model.json,

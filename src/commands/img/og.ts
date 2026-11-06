@@ -67,7 +67,7 @@ export const og = defineCommand(
     option(
       name("quality"),
       cli(["--quality", "-q"]),
-      description("PNG palette or JPEG quality (1-100)"),
+      description("JPEG quality, or PNG quality with --palette (1-100)"),
       schema(z.number().int().min(1).max(100).default(85)),
     ),
     option(
@@ -93,6 +93,7 @@ export const og = defineCommand(
       complete(directories()),
     ),
     toggle(name("strict"), description("Exit non-zero when dimensions do not match --target")),
+    toggle(name("palette"), description("Quantize PNG colours for smaller, lossy palette output")),
     toggle(name("force"), description("Overwrite existing output files")),
     toggle(name("dryRun"), description("Show what would be written without writing")),
     toggle(name("json"), description("Print machine-readable JSON")),
@@ -119,11 +120,15 @@ export const og = defineCommand(
       for (const path of discovered.unsupported) {
         context.stderr.write(`unsupported: ${displayPath(context.cwd, path)}\n`);
       }
+      for (const failure of discovered.errors) {
+        context.stderr.write(`${displayPath(context.cwd, failure.path)}: ${failure.error}\n`);
+      }
       if (model.out !== undefined && discovered.files.length > 1) {
         throw new Error("--out can only be used with a single input; use --out-dir for batches");
       }
       if (discovered.files.length === 0) throw new Error("No supported images found");
 
+      const reserved = new Set<string>();
       const batch = await runBatch(
         discovered.files,
         async (input): Promise<OgResult> => {
@@ -133,6 +138,7 @@ export const og = defineCommand(
             cwd: context.cwd,
             extension: model.format === "jpeg" ? "jpg" : "png",
             overwrite: model.force,
+            reserved,
             ...(model.out === undefined ? {} : { out: model.out }),
             ...(model.outDir === undefined ? {} : { outDir: model.outDir }),
           });
@@ -151,10 +157,13 @@ export const og = defineCommand(
             encode: {
               format: model.format,
               quality: model.quality,
-              ...(model.format === "png" ? { palette: true } : {}),
+              ...(model.format === "png" ? { palette: model.palette } : {}),
             },
           });
-          if (!model.dryRun) await writeFileAtomic(output, result.data);
+          if (!model.dryRun) {
+            context.signal.throwIfAborted();
+            await writeFileAtomic(output, result.data, { overwrite: model.force });
+          }
           return {
             input,
             output,
@@ -240,6 +249,7 @@ export const og = defineCommand(
       const failed =
         batch.failures.length > 0 ||
         batch.aborted ||
+        discovered.errors.length > 0 ||
         discovered.missing.length > 0 ||
         discovered.unsupported.length > 0 ||
         (model.strict && mismatches.length > 0);

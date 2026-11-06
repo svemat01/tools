@@ -116,6 +116,9 @@ export const resize = defineCommand(
         extensions: IMAGE_EXTENSIONS,
         respectGitIgnore: true,
       });
+      for (const failure of discovered.errors) {
+        context.stderr.write(`${displayPath(context.cwd, failure.path)}: ${failure.error}\n`);
+      }
       for (const path of discovered.missing)
         context.stderr.write(`missing: ${displayPath(context.cwd, path)}\n`);
       for (const path of discovered.unsupported) {
@@ -126,6 +129,7 @@ export const resize = defineCommand(
       }
       if (discovered.files.length === 0) throw new Error("No supported images found");
 
+      const reserved = new Set<string>();
       const batch = await runBatch(
         discovered.files,
         async (input): Promise<ResizeResult> => {
@@ -142,6 +146,7 @@ export const resize = defineCommand(
             extension: extensionForFormat(inputFormat),
             suffix,
             overwrite: model.force,
+            reserved,
             ...(model.out === undefined ? {} : { out: model.out }),
             ...(model.outDir === undefined ? {} : { outDir: model.outDir }),
           });
@@ -159,7 +164,8 @@ export const resize = defineCommand(
               ...(inputFormat === "png" ? { palette: false } : {}),
             },
           });
-          if (!model.dryRun) await writeFileAtomic(output, result.data);
+          if (context.signal.aborted) throw new Error("aborted");
+          if (!model.dryRun) await writeFileAtomic(output, result.data, { overwrite: model.force });
           return {
             input,
             output,
@@ -227,6 +233,7 @@ export const resize = defineCommand(
       if (batch.aborted) context.stderr.write("aborted\n");
       return batch.failures.length > 0 ||
         batch.aborted ||
+        discovered.errors.length > 0 ||
         discovered.missing.length > 0 ||
         discovered.unsupported.length > 0
         ? 1

@@ -92,7 +92,7 @@ export const info = defineCommand(
         }
       }
 
-      return failures.length > 0 ? 1 : 0;
+      return failures.length > 0 || context.signal.aborted ? 1 : 0;
     },
   },
 );

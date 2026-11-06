@@ -55,7 +55,7 @@ export async function readToken(input: TokenInput, context: AppContext): Promise
     }
   }
 
-  const token = (await Bun.stdin.text()).trim();
+  const token = (await context.readStdin()).trim();
   if (!token) throw new Error("No token was provided on stdin");
   return token;
 }
@@ -107,7 +107,7 @@ export async function readPayload(
       );
     }
   } else {
-    text = await Bun.stdin.text();
+    text = await context.readStdin();
   }
 
   if (!text.trim()) return {};

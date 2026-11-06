@@ -6,10 +6,10 @@
  * filter is explicit and testable, and no-upscale is the default.
  */
 
-import { rename, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { ensureDirectory, fileSize, planOutputPath } from "./fs.ts";
+import { ensureDirectory, fileSize, planOutputPath, publishFileAtomic } from "./fs.ts";
 import { checkCommand, commandError, requireBinary, runCommand } from "./process.ts";
 
 export const VIDEO_EXTENSIONS = ["mp4", "mov", "m4v", "mkv", "webm", "avi", "gif", "ogv"] as const;
@@ -120,12 +120,25 @@ export function targetDimensions(
   maxHeight?: number,
 ): { readonly width: number; readonly height: number } | undefined {
   if (info.width === undefined || info.height === undefined) return undefined;
-  const widthLimit = maxWidth > 0 ? maxWidth : info.width;
-  const heightLimit = maxHeight !== undefined && maxHeight > 0 ? maxHeight : info.height;
+  // Apply the codec's even-pixel constraint to the bounds before choosing a
+  // scale, so an odd bound does not distort an otherwise square image.
+  const widthLimit = Math.floor(Math.min(info.width, maxWidth > 0 ? maxWidth : info.width) / 2) * 2;
+  const heightLimit =
+    Math.floor(
+      Math.min(info.height, maxHeight !== undefined && maxHeight > 0 ? maxHeight : info.height) / 2,
+    ) * 2;
   const scale = Math.min(1, widthLimit / info.width, heightLimit / info.height);
-  if (scale >= 1) return undefined;
-  const even = (value: number) => Math.max(2, Math.round(value / 2) * 2);
-  return { width: even(info.width * scale), height: even(info.height * scale) };
+  if (scale >= 1 && info.width % 2 === 0 && info.height % 2 === 0) return undefined;
+  const even = (value: number, limit: number) => {
+    if (limit < 2 || value < 2) {
+      throw new Error("VP9 output dimensions must be at least 2 pixels; increase the dimension limits");
+    }
+    return Math.min(Math.floor(limit / 2) * 2, Math.max(2, Math.round(value / 2) * 2));
+  };
+  return {
+    width: even(info.width * scale, Math.min(info.width, widthLimit)),
+    height: even(info.height * scale, Math.min(info.height, heightLimit)),
+  };
 }
 
 export interface WebmPlan {
@@ -143,6 +156,7 @@ export interface WebmOutputOptions {
   /** Output directory for batch conversions. */
   readonly outDir?: string;
   readonly overwrite?: boolean;
+  readonly reserved?: Set<string>;
 }
 
 export async function planWebm(
@@ -158,6 +172,7 @@ export async function planWebm(
     cwd: output.cwd,
     extension: "webm",
     overwrite: output.overwrite ?? false,
+    ...(output.reserved ? { reserved: output.reserved } : {}),
     ...(output.out === undefined ? {} : { out: output.out }),
     ...(output.outDir === undefined ? {} : { outDir: output.outDir }),
   });
@@ -268,7 +283,8 @@ export async function convertToWebm(
       ...(runOptions.signal ? { signal: runOptions.signal } : {}),
     });
     if (result.code !== 0) throw new Error(commandError(result));
-    await rename(temporary, plan.output);
+    runOptions.signal?.throwIfAborted();
+    await publishFileAtomic(temporary, plan.output, { overwrite: output.overwrite ?? false });
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;

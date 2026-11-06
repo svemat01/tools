@@ -5,6 +5,7 @@ import {
   extractFrontmatter,
   normalizeBlankLines,
   parseMarkdown,
+  protectedMarkdownRanges,
   splitUrlSuffix,
   stripTrackingParameters,
   toUrlPath,
@@ -152,4 +153,149 @@ describe("extractFrontmatter", () => {
   test("returns the source when there is no frontmatter", () => {
     expect(extractFrontmatter("# Body\n")).toEqual({ data: {}, body: "# Body\n", raw: "" });
   });
+});
+
+describe("conservative source rewriting", () => {
+  function rewrite(source: string, replacement = "next.webp", path = "post.md"): string {
+    const references = parseMarkdown(source, path).references;
+    const edits = references.flatMap((reference) => {
+      const edit = urlEdit(source, reference, replacement);
+      return edit ? [edit] : [];
+    });
+    return applyEdits(source, edits);
+  }
+
+  test("rewrites the destination after whitespace without touching its identical title", () => {
+    expect(rewrite('[label]( image.png "image.png")')).toBe('[label]( next.webp "image.png")');
+    expect(rewrite('![image.png](image.png "image.png")')).toBe('![image.png](next.webp "image.png")');
+  });
+
+  test("handles nested labels and literal parenthesized destinations", () => {
+    expect(rewrite('[label [nested]](image(test).png "title")')).toBe('[label [nested]](next.webp "title")');
+    expect(rewrite('[label](<image with spaces.png> "title")')).toBe('[label](<next.webp> "title")');
+    expect(rewrite('[label]:  <image.png> "image.png"')).toBe('[label]:  <next.webp> "image.png"');
+  });
+
+  test("refuses to guess the destination of decoded or escaped source text", () => {
+    const source = '[label](image\\(1\\).png "image(1).png")';
+    expect(rewrite(source)).toBe(source);
+    const encoded = '[label](image.png?x=1&amp;y=2 "image.png?x=1&y=2")';
+    expect(rewrite(encoded)).toBe(encoded);
+  });
+
+  test("tracks each HTML attribute and its own tag alt text", () => {
+    // A quoted attribute containing a URL-like word must not be mistaken for src.
+    const valid = '<img title="src=fiction.png" src="a.png" alt="A"><img src="b.png" alt="B">';
+    const parsed = parseMarkdown(valid, "post.md");
+    expect(parsed.references.map((reference) => [reference.url, reference.alt])).toEqual([
+      ["a.png", "A"],
+      ["b.png", "B"],
+    ]);
+    expect(rewrite(valid)).toBe(
+      '<img title="src=fiction.png" src="next.webp" alt="A"><img src="next.webp" alt="B">',
+    );
+  });
+
+  test("does not invent HTML references inside comments", () => {
+    expect(parseMarkdown('<!-- <img src="fake.png"> -->', "post.md").references).toEqual([]);
+  });
+
+  test("keeps separate source spans for src and href in MDX", () => {
+    const source = '<Asset src="image.png" href="image.png" alt="image.png" />';
+    expect(rewrite(source, "next.webp", "post.mdx")).toBe(
+      '<Asset src="next.webp" href="next.webp" alt="image.png" />',
+    );
+  });
+
+  test("encodes replacement delimiters without breaking destination syntax", () => {
+    expect(rewrite("[x](old.png)", "new (1).png")).toBe("[x](new%20%281%29.png)");
+    expect(rewrite('<img src="old.png">', 'new"name.png')).toBe('<img src="new%22name.png">');
+  });
+
+  test("rejects stale spans", () => {
+    const source = "[x](old.png)";
+    const reference = parseMarkdown(source, "post.md").references[0]!;
+    expect(urlEdit("[x](new.png)", reference, "next.webp")).toBeUndefined();
+  });
+});
+
+describe("tracking parameter safety", () => {
+  test("preserves functional parameters even alongside tracking", () => {
+    const result = stripTrackingParameters(
+      "https://example.com/?s=search&source=feed&ref=branch&referrer=home&si=id&trk=route&utm_source=email",
+    );
+    expect(result.url).toBe(
+      "https://example.com/?s=search&source=feed&ref=branch&referrer=home&si=id&trk=route",
+    );
+    expect(result.removed).toEqual(["utm_source"]);
+  });
+
+  test("does not normalize encoding or duplicate values in preserved query fields", () => {
+    const result = stripTrackingParameters("/find?q=a%20b&q=%2f&literal=~&utm_source=x#fragment");
+    expect(result.url).toBe("/find?q=a%20b&q=%2f&literal=~#fragment");
+  });
+});
+
+describe("protected Markdown content", () => {
+  test("preserves longer fences containing shorter fence examples", () => {
+    const literal = "````md\n```\n\n\nexample\n```\n\n\n````\n";
+    expect(normalizeBlankLines(literal).text).toBe(literal);
+  });
+
+  test("does not treat a fence with trailing text as a closing fence", () => {
+    const literal = "```\n```not-a-close\n\n\nexample\n```\n";
+    expect(normalizeBlankLines(literal).text).toBe(literal);
+  });
+
+  test("preserves indented code and unfinished fenced blocks", () => {
+    const indented = "    first\n\n\n    second\n";
+    expect(normalizeBlankLines(indented).text).toBe(indented);
+    const unfinished = "```\nfirst\n\n\n";
+    expect(normalizeBlankLines(unfinished).text).toBe(unfinished);
+  });
+
+  test("protects code, metadata and MDX JavaScript while allowing prose cleanup", () => {
+    const source =
+      '---\ntitle: text\n---\n\n<!-- notionvc: remove -->\n\n`literal`\n\nexport const value = "code";\n\n{value}\n\n<Image src="asset.png" />\n\nprose\n';
+    const ranges = protectedMarkdownRanges(source, "post.mdx");
+    const protectedText = ranges.map((range) => source.slice(range.start, range.end));
+    expect(protectedText).toContain("---\ntitle: text\n---");
+    expect(protectedText).toContain("`literal`");
+    expect(protectedText).toContain('export const value = "code";');
+    expect(protectedText).toContain("{value}");
+    expect(protectedText).toContain('src="asset.png"');
+    expect(protectedText.some((text) => text.includes("notionvc"))).toBe(false);
+    expect(protectedText.some((text) => text.includes("prose"))).toBe(false);
+  });
+});
+
+test("rewrites unambiguous autolinks without changing their label separately", () => {
+  for (const source of ["<https://example.com/?utm_source=x>", "https://example.com/?utm_source=x"]) {
+    const reference = parseMarkdown(source, "post.md").references[0]!;
+    const edit = urlEdit(source, reference, "https://example.com/");
+    expect(edit).toBeDefined();
+    expect(applyEdits(source, [edit!])).toBe(
+      source.startsWith("<") ? "<https://example.com/>" : "https://example.com/",
+    );
+  }
+});
+
+test("frontmatter must be a mapping rather than a sequence", () => {
+  expect(() => extractFrontmatter("---\n- title\n- slug\n---\nbody\n")).toThrow("must be an object");
+});
+
+test("preserves blank lines in MDX expressions and literal HTML blocks", () => {
+  const mdx = "{`first\n\n\nsecond`}\n";
+  expect(normalizeBlankLines(mdx, "post.mdx").text).toBe(mdx);
+  const html = "<pre>first\n\n\nsecond</pre>\n";
+  expect(normalizeBlankLines(html).text).toBe(html);
+  expect(normalizeBlankLines(html, "post.mdx").text).toBe(html);
+});
+
+test("does not extract apparent HTML references inside literal elements", () => {
+  for (const tag of ["script", "style", "pre", "textarea", "code"]) {
+    const source = `<${tag}>\nconst demo = '<img src="a.png">';\n</${tag}>\n<img src="b.png">\n`;
+    const result = parseMarkdown(source, "post.md");
+    expect(result.references.map((reference) => reference.url)).toEqual(["b.png"]);
+  }
 });

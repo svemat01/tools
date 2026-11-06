@@ -91,6 +91,7 @@ export type SecretSource =
 export interface SecretOptions {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly cwd: string;
+  readonly readStdin?: () => Promise<string>;
 }
 
 export async function readSecret(source: SecretSource, options: SecretOptions): Promise<string> {
@@ -110,7 +111,7 @@ export async function readSecret(source: SecretSource, options: SecretOptions): 
       );
     }
   }
-  const text = await Bun.stdin.text();
+  const text = await (options.readStdin ? options.readStdin() : Bun.stdin.text());
   if (!text.trim()) throw new Error("No secret was provided on stdin");
   return text.replace(/\r?\n$/, "");
 }

@@ -226,6 +226,7 @@ export interface SkippedFile {
 export interface ScanSummary {
   readonly files: readonly ScanFileResult[];
   readonly skipped: readonly SkippedFile[];
+  readonly errors: readonly SkippedFile[];
   readonly scanned: number;
   readonly totalFindings: number;
   readonly fixableFindings: number;
@@ -249,6 +250,11 @@ export async function scanPaths(paths: readonly string[], options: ScanPathsOpti
 
   const files: ScanFileResult[] = [];
   const skipped: SkippedFile[] = [];
+  const errors: SkippedFile[] = [
+    ...discovered.missing.map((path) => ({ path, reason: "path not found" })),
+    ...discovered.unsupported.map((path) => ({ path, reason: "unsupported path" })),
+    ...discovered.errors.map(({ path, error }) => ({ path, reason: error })),
+  ];
   const maxBytes = options.maxBytes ?? 5 * 1024 * 1024;
 
   for (const path of discovered.files) {
@@ -265,7 +271,10 @@ export async function scanPaths(paths: readonly string[], options: ScanPathsOpti
       }
       files.push(result);
     } catch (error) {
-      skipped.push({ path, reason: error instanceof Error ? error.message : String(error) });
+      const entry = { path, reason: error instanceof Error ? error.message : String(error) };
+      if (error instanceof TypeError)
+        skipped.push(entry); // Non-UTF-8 input is intentionally excluded.
+      else errors.push(entry);
     }
   }
 
@@ -278,12 +287,13 @@ export async function scanPaths(paths: readonly string[], options: ScanPathsOpti
     ).length;
   }
 
-  return { files, skipped, scanned: files.length, totalFindings, fixableFindings };
+  return { files, skipped, errors, scanned: files.length, totalFindings, fixableFindings };
 }
 
 export interface FixOptions {
   readonly typography?: boolean;
   readonly dryRun?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export interface FixedFile {
@@ -332,6 +342,7 @@ export async function fixScans(
   let replacements = 0;
 
   for (const scan of scans) {
+    if (options.signal?.aborted) break;
     if (scan.findings.length === 0) continue;
     const fixed = fixText(scan.text, { typography: options.typography ?? false });
     if (fixed.replacements === 0 || fixed.text === scan.text) continue;
@@ -350,7 +361,8 @@ export async function fixScans(
 
     const bytes = encodeTextFile(scan.file, fixed.text);
     if (!options.dryRun) {
-      await writeFileAtomic(scan.path, bytes);
+      if (options.signal?.aborted) break;
+      await writeFileAtomic(scan.path, bytes, { overwrite: true, expectedBytes: scan.file.bytes });
     }
     changed.push({
       path: scan.path,

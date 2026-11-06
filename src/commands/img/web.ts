@@ -44,8 +44,8 @@ export const web = defineCommand(
     option(
       name("quality"),
       cli(["--quality", "-q"]),
-      description("WebP/AVIF quality (1-100)"),
-      schema(z.number().int().min(1).max(100).default(82)),
+      description("WebP/AVIF quality (1-100, default: 82); explicitly setting it re-encodes existing images"),
+      schema(z.number().int().min(1).max(100).optional()),
     ),
     option(
       name("format"),
@@ -69,7 +69,8 @@ export const web = defineCommand(
       schema(z.string().optional()),
       complete(directories()),
     ),
-    toggle(name("keepSize"), description("Do not resize; only re-encode")),
+    toggle(name("keepSize"), description("Keep original dimensions when converting or re-encoding")),
+    toggle(name("reencode"), description("Re-encode images already in the target format")),
     toggle(name("force"), description("Overwrite existing output files")),
     toggle(name("dryRun"), description("Show what would be written without writing")),
     toggle(name("json"), description("Print machine-readable JSON")),
@@ -93,6 +94,9 @@ export const web = defineCommand(
       for (const path of discovered.unsupported) {
         context.stderr.write(`unsupported: ${displayPath(context.cwd, path)}\n`);
       }
+      for (const failure of discovered.errors) {
+        context.stderr.write(`${displayPath(context.cwd, failure.path)}: ${failure.error}\n`);
+      }
       if (model.out !== undefined && discovered.files.length > 1) {
         throw new Error("--out can only be used with a single input; use --out-dir for batches");
       }
@@ -102,15 +106,16 @@ export const web = defineCommand(
 
       const format = model.format;
       const outputExtension = extensionForFormat(format);
+      const reserved = new Set<string>();
       const batch = await runBatch(
         discovered.files,
         async (input): Promise<WebResult> => {
           const info = await inspectImage(input);
           const sourceFormat = normalizeFormat(info.format);
           const needsResize = !model.keepSize && info.width > model.width;
-          const needsReencode = sourceFormat !== format;
+          const needsReencode = sourceFormat !== format || model.reencode || model.quality !== undefined;
           const explicitOutput = model.out !== undefined || model.outDir !== undefined;
-          if (!needsResize && !needsReencode && !model.force && !explicitOutput) {
+          if (!needsResize && !needsReencode && !explicitOutput) {
             return {
               input,
               output: input,
@@ -127,13 +132,18 @@ export const web = defineCommand(
             cwd: context.cwd,
             extension: outputExtension,
             overwrite: model.force,
+            reserved,
             ...(model.out === undefined ? {} : { out: model.out }),
             ...(model.outDir === undefined ? {} : { outDir: model.outDir }),
           });
           if (!needsResize && !needsReencode) {
             // Already in the target format: copy the bytes rather than
             // re-encoding and losing quality.
-            if (!model.dryRun) await writeFileAtomic(output, await readFileBytes(input));
+            if (!model.dryRun) {
+              const bytes = await readFileBytes(input);
+              context.signal.throwIfAborted();
+              await writeFileAtomic(output, bytes, { overwrite: model.force });
+            }
             return {
               input,
               output,
@@ -146,9 +156,12 @@ export const web = defineCommand(
           }
           const result = await transformImage(input, {
             ...(model.keepSize ? {} : { resize: { width: model.width, withoutEnlargement: true } }),
-            encode: { format, quality: model.quality },
+            encode: { format, quality: model.quality ?? 82 },
           });
-          if (!model.dryRun) await writeFileAtomic(output, result.data);
+          if (!model.dryRun) {
+            context.signal.throwIfAborted();
+            await writeFileAtomic(output, result.data, { overwrite: model.force });
+          }
           return {
             input,
             output,
@@ -200,7 +213,9 @@ export const web = defineCommand(
         for (const result of batch.results) {
           const label = displayPath(context.cwd, result.input);
           if (result.skipped) {
-            context.stdout.write(`${label}: already ${format}; skipped (use --force to re-encode)\n`);
+            context.stdout.write(
+              `${label}: already ${format}; skipped (use --reencode or --quality to re-encode)\n`,
+            );
             continue;
           }
           const output = displayPath(context.cwd, result.output);
@@ -227,6 +242,7 @@ export const web = defineCommand(
       if (batch.aborted) context.stderr.write("aborted\n");
       return batch.failures.length > 0 ||
         batch.aborted ||
+        discovered.errors.length > 0 ||
         discovered.missing.length > 0 ||
         discovered.unsupported.length > 0
         ? 1

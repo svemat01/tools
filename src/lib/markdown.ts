@@ -24,6 +24,10 @@ export interface MarkdownReference {
   readonly line: number;
   readonly column: number;
   readonly raw: string;
+  /** Exact source span, absent when the decoded destination cannot be safely located. */
+  readonly urlStart?: number;
+  readonly urlEnd?: number;
+  readonly urlSyntax?: "markdown" | "angle" | "double" | "single" | "unquoted";
 }
 
 export interface MarkdownParseResult {
@@ -32,7 +36,7 @@ export interface MarkdownParseResult {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function startOffset(node: Node): { start: number; end: number; line: number; column: number } | undefined {
@@ -70,16 +74,27 @@ export function parseMarkdown(source: string, path: string): MarkdownParseResult
           ...base,
           kind: "image",
           url: node.url,
+          ...markdownDestination(raw, position.start, node.url, false),
           ...(typeof node.alt === "string" ? { alt: node.alt } : {}),
         });
         return;
       }
       if (node.type === "link" && isRecord(node) && typeof node.url === "string") {
-        references.push({ ...base, kind: "link", url: node.url });
+        references.push({
+          ...base,
+          kind: "link",
+          url: node.url,
+          ...markdownDestination(raw, position.start, node.url, false),
+        });
         return;
       }
       if (node.type === "definition" && isRecord(node) && typeof node.url === "string") {
-        references.push({ ...base, kind: "definition", url: node.url });
+        references.push({
+          ...base,
+          kind: "definition",
+          url: node.url,
+          ...markdownDestination(raw, position.start, node.url, true),
+        });
         return;
       }
       if (node.type === "html") {
@@ -88,6 +103,9 @@ export function parseMarkdown(source: string, path: string): MarkdownParseResult
             ...base,
             kind: "html",
             url: attribute.url,
+            urlStart: position.start + attribute.start,
+            urlEnd: position.start + attribute.end,
+            urlSyntax: attribute.syntax,
             ...(attribute.alt === undefined ? {} : { alt: attribute.alt }),
           });
         }
@@ -95,18 +113,28 @@ export function parseMarkdown(source: string, path: string): MarkdownParseResult
       }
       if (node.type === "mdxJsxFlowElement" || node.type === "mdxJsxTextElement") {
         const attributes = isRecord(node) && Array.isArray(node.attributes) ? node.attributes : [];
-        let url: string | undefined;
-        let alt: string | undefined;
+        const alt = attributes.find((attribute) => isRecord(attribute) && attribute.name === "alt");
         for (const attribute of attributes) {
-          if (!isRecord(attribute) || typeof attribute.name !== "string") continue;
-          const value = attribute.value;
-          const text = typeof value === "string" ? value : undefined;
-          if (text === undefined) continue;
-          if (attribute.name === "src" || attribute.name === "href") url = text;
-          if (attribute.name === "alt") alt = text;
-        }
-        if (url !== undefined) {
-          references.push({ ...base, kind: "jsx", url, ...(alt === undefined ? {} : { alt }) });
+          if (!isRecord(attribute) || !["src", "href"].includes(String(attribute.name))) continue;
+          if (typeof attribute.value !== "string") continue;
+          const span = startOffset(attribute as unknown as Node);
+          const attributeSource = span ? source.slice(span.start, span.end) : "";
+          const match = /^(?:src|href)\s*=\s*(["'])([\s\S]*)\1$/.exec(attributeSource);
+          const exact = span && match && match[2] === attribute.value;
+          const start = exact ? span.start + attributeSource.indexOf(match[1]!) + 1 : undefined;
+          references.push({
+            ...base,
+            kind: "jsx",
+            url: attribute.value,
+            ...(isRecord(alt) && typeof alt.value === "string" ? { alt: alt.value } : {}),
+            ...(start === undefined
+              ? {}
+              : {
+                  urlStart: start,
+                  urlEnd: start + attribute.value.length,
+                  urlSyntax: match?.[1] === '"' ? ("double" as const) : ("single" as const),
+                }),
+          });
         }
       }
     });
@@ -119,16 +147,126 @@ export function parseMarkdown(source: string, path: string): MarkdownParseResult
   }
 }
 
-function htmlAttributes(raw: string): { url: string; alt?: string }[] {
-  const found: { url: string; alt?: string }[] = [];
-  const attribute = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
-  let match;
-  while ((match = attribute.exec(raw)) !== null) {
-    const url = match[2] ?? match[3] ?? match[4] ?? "";
-    if (!url) continue;
-    const altMatch = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(raw);
-    const alt = altMatch ? (altMatch[1] ?? altMatch[2] ?? altMatch[3] ?? "") : undefined;
-    found.push({ url, ...(alt === undefined ? {} : { alt }) });
+interface SourceDestination {
+  readonly urlStart?: number;
+  readonly urlEnd?: number;
+  readonly urlSyntax?: Exclude<MarkdownReference["urlSyntax"], undefined>;
+}
+
+/** Locate a literal destination after the actual label, never in the title or label text. */
+function markdownDestination(
+  raw: string,
+  offset: number,
+  url: string,
+  definition: boolean,
+): SourceDestination {
+  if (raw === url) return { urlStart: offset, urlEnd: offset + raw.length, urlSyntax: "markdown" };
+  if (raw.startsWith("<") && raw.endsWith(">") && raw.slice(1, -1) === url) {
+    return { urlStart: offset + 1, urlEnd: offset + raw.length - 1, urlSyntax: "angle" };
+  }
+  let index = raw.startsWith("![") ? 2 : raw.startsWith("[") ? 1 : -1;
+  if (index < 0) return {}; // Unsupported syntax has no independently editable destination.
+  let depth = 1;
+  for (; index < raw.length; index++) {
+    if (raw[index] === "\\") {
+      index++;
+      continue;
+    }
+    // Labels containing code spans need token-level resolution; leave them alone.
+    if (raw[index] === "`") return {};
+    if (raw[index] === "[") depth++;
+    if (raw[index] === "]" && --depth === 0) break;
+  }
+  if (raw[index + 1] !== (definition ? ":" : "(")) return {};
+  index += 2;
+  while (/\s/.test(raw[index] ?? "") && index < raw.length) index++;
+  const angle = raw[index] === "<";
+  if (angle) index++;
+  const start = index;
+  let parentheses = 0;
+  for (; index < raw.length; index++) {
+    const character = raw[index];
+    // Remark decodes escapes/entities; do not guess their source representation.
+    if (character === "\\") return {};
+    if (angle) {
+      if (character === ">") break;
+    } else {
+      if (/\s/.test(character ?? "")) break;
+      if (character === "(") parentheses++;
+      if (character === ")") {
+        if (parentheses === 0) break;
+        parentheses--;
+      }
+    }
+  }
+  if (raw.slice(start, index) !== url) return {};
+  return { urlStart: offset + start, urlEnd: offset + index, urlSyntax: angle ? "angle" : "markdown" };
+}
+
+function htmlAttributes(raw: string): {
+  url: string;
+  alt?: string;
+  start: number;
+  end: number;
+  syntax: "double" | "single" | "unquoted";
+}[] {
+  const found: ReturnType<typeof htmlAttributes> = [];
+  // Consume quoted values as part of the tag, so a 'src=' inside one is never another attribute.
+  const tags = /<\/?[A-Za-z][\w:.-]*(?:[^>"']|"[^"]*"|'[^']*')*>/g;
+  const literalElements = new Set([
+    "script",
+    "style",
+    "pre",
+    "code",
+    "textarea",
+    "xmp",
+    "iframe",
+    "noembed",
+    "noframes",
+    "plaintext",
+  ]);
+  let literal: string | undefined;
+  for (const tag of raw.replace(/<!--[\s\S]*?-->/g, (comment) => " ".repeat(comment.length)).matchAll(tags)) {
+    const name = /^<(\/?)([\w:.-]+)/.exec(tag[0]);
+    const tagName = name?.[2]?.toLowerCase() ?? "";
+    const closing = name?.[1] === "/";
+    if (literal) {
+      if (closing && tagName === literal) literal = undefined;
+      continue;
+    }
+    if (closing) continue;
+    if (literalElements.has(tagName)) literal = tagName;
+    const attributes = /([^\s=<>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    const values: { name: string; value: string; start: number; syntax: "double" | "single" | "unquoted" }[] =
+      [];
+    attributes.lastIndex = /^<[\w:.-]+/.exec(tag[0])?.[0].length ?? 0;
+    let match;
+    while ((match = attributes.exec(tag[0])) !== null) {
+      const value = match[2] ?? match[3] ?? match[4];
+      if (value === undefined) continue;
+      const syntax = match[2] !== undefined ? "double" : match[3] !== undefined ? "single" : "unquoted";
+      const equals = match[0].indexOf("=");
+      let start = equals + 1;
+      while (/\s/.test(match[0][start] ?? "") && start < match[0].length) start++;
+      if (syntax !== "unquoted") start++;
+      values.push({
+        name: (match[1] ?? "").toLowerCase(),
+        value,
+        start: tag.index + match.index + start,
+        syntax,
+      });
+    }
+    const alt = values.find((attribute) => attribute.name === "alt")?.value;
+    for (const attribute of values) {
+      if (attribute.name !== "src" && attribute.name !== "href") continue;
+      found.push({
+        url: attribute.value,
+        start: attribute.start,
+        end: attribute.start + attribute.value.length,
+        syntax: attribute.syntax,
+        ...(alt === undefined ? {} : { alt }),
+      });
+    }
   }
   return found;
 }
@@ -188,57 +326,32 @@ export function urlEdit(
   replacement: string,
 ): TextEdit | undefined {
   if (reference.url === replacement) return undefined;
-  const raw = source.slice(reference.nodeStart, reference.nodeEnd);
-  const offset = urlOffsetInRaw(raw, reference);
-  if (offset === -1) return undefined;
-  const start = reference.nodeStart + offset;
-  return {
-    start,
-    end: start + reference.url.length,
-    replacement,
-    reason: `rewrite ${reference.url} → ${replacement}`,
-  };
-}
-
-function urlOffsetInRaw(raw: string, reference: MarkdownReference): number {
-  const url = reference.url;
-  if (!raw.includes(url)) return -1;
-  const matchesAt = (index: number) => raw.slice(index, index + url.length) === url;
-
-  if (reference.kind === "image" || reference.kind === "link") {
-    const marker = raw.indexOf("](");
-    if (marker !== -1) {
-      const start = marker + 2;
-      if (matchesAt(start)) return start;
-      if (raw[start] === "<" && matchesAt(start + 1)) return start + 1;
-    }
-  }
-
-  if (reference.kind === "definition") {
-    const marker = raw.indexOf("]:");
-    if (marker !== -1) {
-      let start = marker + 2;
-      while (start < raw.length && /\s/.test(raw[start] ?? "")) start++;
-      if (raw[start] === "<") start++;
-      if (matchesAt(start)) return start;
-    }
-  }
-
-  if (reference.kind === "html" || reference.kind === "jsx") {
-    const attribute = /(?:^|\s)(?:src|href)\s*=\s*(?:"|')?/i.exec(raw);
-    if (attribute) {
-      const start = attribute.index + attribute[0].length;
-      if (matchesAt(start)) return start;
-    }
-  }
-
-  return raw.lastIndexOf(url);
+  const { urlStart: start, urlEnd: end, urlSyntax } = reference;
+  if (start === undefined || end === undefined || urlSyntax === undefined) return undefined;
+  if (
+    source.slice(reference.nodeStart, reference.nodeEnd) !== reference.raw ||
+    source.slice(start, end) !== reference.url
+  )
+    return undefined;
+  // Encode syntax delimiters rather than introducing malformed Markdown or attributes.
+  const unsafe =
+    urlSyntax === "markdown"
+      ? /[\s()<>\\]/g
+      : urlSyntax === "angle"
+        ? /[\s<>\\]/g
+        : urlSyntax === "double"
+          ? /["<>]/g
+          : urlSyntax === "single"
+            ? /['<>]/g
+            : /[\s"'`=<>]/g;
+  const encoded = replacement.replace(unsafe, (character) => {
+    const encoded = encodeURIComponent(character);
+    return encoded === character ? `%${character.charCodeAt(0).toString(16).toUpperCase()}` : encoded;
+  });
+  return { start, end, replacement: encoded, reason: `rewrite ${reference.url} → ${replacement}` };
 }
 
 const TRACKING_PARAMETERS = new Set([
-  "source",
-  "ref",
-  "referrer",
   "fbclid",
   "gclid",
   "dclid",
@@ -246,8 +359,6 @@ const TRACKING_PARAMETERS = new Set([
   "mc_cid",
   "mc_eid",
   "igshid",
-  "si",
-  "s",
   "vero_id",
   "oly_anon_id",
   "oly_enc_id",
@@ -255,7 +366,6 @@ const TRACKING_PARAMETERS = new Set([
   "_hsenc",
   "_hsmi",
   "mkt_tok",
-  "trk",
   "trkcampaign",
   "sc_campaign",
   "sc_channel",
@@ -290,16 +400,15 @@ export function stripTrackingParameters(url: string): TrackingResult {
   if (queryIndex === -1) return { url, removed: [] };
   const path = beforeHash.slice(0, queryIndex);
   const query = beforeHash.slice(queryIndex + 1);
-  const params = new URLSearchParams(query);
   const removed: string[] = [];
-  for (const name of [...params.keys()]) {
-    if (isTrackingParameter(name)) {
-      params.delete(name);
-      removed.push(name);
-    }
-  }
+  const kept = query.split("&").filter((part) => {
+    const name = new URLSearchParams(part).keys().next().value as string | undefined;
+    if (name === undefined || !isTrackingParameter(name)) return true;
+    removed.push(name);
+    return false;
+  });
   if (removed.length === 0) return { url, removed: [] };
-  const search = params.toString();
+  const search = kept.join("&");
   return { url: `${path}${search ? `?${search}` : ""}${hash}`, removed };
 }
 
@@ -320,66 +429,95 @@ export interface NormalizeResult {
   readonly collapsedBlankLines: number;
 }
 
-/**
- * Collapse runs of blank lines outside frontmatter and fenced code, and ensure
- * exactly one trailing newline. Existing line endings are reused.
- */
-export function normalizeBlankLines(source: string): NormalizeResult {
-  const lines = splitLines(source);
-  const output: { text: string; ending: string }[] = [];
-  let inFrontmatter = false;
-  let fence: string | undefined;
-  let previousBlank = false;
-  let collapsed = 0;
+export interface SourceRange {
+  readonly start: number;
+  readonly end: number;
+}
 
-  for (const [index, line] of lines.entries()) {
-    const trimmed = line.text.trim();
-    if (index === 0 && trimmed === "---") {
-      inFrontmatter = true;
-      output.push(line);
-      previousBlank = false;
-      continue;
-    }
-    if (inFrontmatter) {
-      output.push(line);
-      if (trimmed === "---") inFrontmatter = false;
-      previousBlank = false;
-      continue;
-    }
-    if (fence !== undefined) {
-      output.push(line);
-      if (trimmed.startsWith(fence)) fence = undefined;
-      previousBlank = false;
-      continue;
-    }
-    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-      fence = trimmed.slice(0, 3);
-      output.push(line);
-      previousBlank = false;
-      continue;
-    }
-
-    const blank = trimmed === "";
-    if (blank) {
-      if (previousBlank) {
-        collapsed++;
-        continue;
-      }
-      previousBlank = true;
-      output.push(line);
-    } else {
-      previousBlank = false;
-      output.push(line);
+/** Protect literal code and metadata even before invalid MDX HTML comments are removed. */
+export function protectedMarkdownRanges(source: string, path: string): readonly SourceRange[] {
+  const ranges: SourceRange[] = [];
+  const collect = (tree: Node, types: ReadonlySet<string>) =>
+    visit(tree, (node) => {
+      if (!types.has(node.type)) return;
+      const span = startOffset(node);
+      if (span) ranges.push({ start: span.start, end: span.end });
+    });
+  const markdown = unified().use(remarkParse).use(remarkGfm).use(remarkFrontmatter).parse(source);
+  collect(markdown, new Set(["code", "inlineCode", "yaml"]));
+  visit(markdown, (node) => {
+    if (node.type !== "html" || !isRecord(node) || typeof node.value !== "string") return;
+    if (!/^\s*<(?:pre|script|style|textarea)(?:\s|>)/i.test(node.value)) return;
+    const span = startOffset(node);
+    if (span) ranges.push({ start: span.start, end: span.end });
+  });
+  if (/\.mdx$/i.test(path)) {
+    // HTML comments are invalid MDX, but must not prevent protecting nearby expressions.
+    const masked = source.replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, " "));
+    try {
+      const mdx = unified()
+        .use(remarkParse)
+        .use(remarkGfm)
+        .use(remarkFrontmatter)
+        .use(remarkMdx)
+        .parse(masked);
+      collect(mdx, new Set(["mdxFlowExpression", "mdxTextExpression", "mdxjsEsm"]));
+      visit(mdx, (node) => {
+        if (!isRecord(node)) return;
+        if (["pre", "script", "style", "textarea"].includes(String(node.name))) {
+          const span = startOffset(node);
+          if (span) ranges.push({ start: span.start, end: span.end });
+        }
+        if (!Array.isArray(node.attributes)) return;
+        for (const attribute of node.attributes) {
+          if (!isRecord(attribute)) continue;
+          const span = startOffset(attribute as unknown as Node);
+          if (span) ranges.push({ start: span.start, end: span.end });
+        }
+      });
+    } catch {
+      // Unknown syntax is never permission to rewrite potentially executable content.
+      return [{ start: 0, end: source.length }];
     }
   }
+  const merged: SourceRange[] = [];
+  for (const range of ranges.sort((left, right) => left.start - right.start)) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end) {
+      merged[merged.length - 1] = { start: previous.start, end: Math.max(previous.end, range.end) };
+    } else merged.push(range);
+  }
+  return merged;
+}
 
-  // Drop trailing blank lines, then add one line ending.
-  while (output.length > 0 && (output.at(-1)?.text.trim() ?? "") === "") output.pop();
-  const ending = dominantEnding(lines);
-  const text = `${output
-    .map((line) => line.text + line.ending)
-    .join("")
-    .replace(/(?:\r\n|\n|\r)+$/, "")}${ending}`;
+/** Collapse blank lines outside literal code/frontmatter, retaining their exact bytes. */
+export function normalizeBlankLines(source: string, path = "post.md"): NormalizeResult {
+  const lines = splitLines(source);
+  const ranges = protectedMarkdownRanges(source, path);
+  const output: { text: string; ending: string; protected: boolean }[] = [];
+  let previousBlank = false;
+  let collapsed = 0;
+  let offset = 0;
+  for (const line of lines) {
+    const end = offset + line.text.length + line.ending.length;
+    const protectedLine = ranges.some((range) => range.start < end && range.end > offset);
+    offset = end;
+    if (protectedLine) {
+      output.push({ ...line, protected: true });
+      previousBlank = false;
+      continue;
+    }
+    const blank = line.text.trim() === "";
+    if (blank && previousBlank) {
+      collapsed++;
+      continue;
+    }
+    previousBlank = blank;
+    output.push({ ...line, protected: false });
+  }
+  while (output.length > 0 && !output.at(-1)?.protected && output.at(-1)?.text.trim() === "") output.pop();
+  let text = output.map((line) => line.text + line.ending).join("");
+  if (!/[\r\n]$/.test(text)) text += dominantEnding(lines);
   return { text, changed: text !== source, collapsedBlankLines: collapsed };
 }
 

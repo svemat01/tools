@@ -8,6 +8,7 @@
 import { resolve } from "node:path";
 
 import type { BaseContext, ModelOfElement } from "./kit/index.ts";
+import { confirm } from "./lib/prompt.ts";
 import type { globalOptions } from "./options.ts";
 
 export interface Logger {
@@ -17,6 +18,8 @@ export interface Logger {
 
 export interface AppContext extends BaseContext {
   readonly log: Logger;
+  readonly readStdin: () => Promise<string>;
+  readonly confirm: (message: string) => Promise<boolean>;
 }
 
 type RootModel = ModelOfElement<typeof globalOptions>;
@@ -30,6 +33,11 @@ export function createContext(
   return {
     ...base,
     cwd: cwd === undefined ? base.cwd : resolve(base.cwd, cwd),
+    readStdin: () => {
+      base.signal.throwIfAborted();
+      return Bun.stdin.text();
+    },
+    confirm: (message) => confirm(message, { output: base.stderr, signal: base.signal }),
     log: {
       info: (message) => base.stderr.write(`${message}\n`),
       debug: (message) => {

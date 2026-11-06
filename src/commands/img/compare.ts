@@ -7,7 +7,13 @@ import { z } from "zod";
 
 import type { AppContext } from "../../context.ts";
 import { complete, defineCommand, files } from "../../kit/index.ts";
-import { displayPath, nextAvailablePath, planOutputPath, writeFileAtomic } from "../../lib/fs.ts";
+import {
+  displayPath,
+  nextAvailablePath,
+  planOutputPath,
+  resolvePath,
+  writeFileAtomic,
+} from "../../lib/fs.ts";
 import { color, formatPercent, json, useColor } from "../../lib/output.ts";
 
 interface RgbaImage {
@@ -107,8 +113,12 @@ export const compare = defineCommand(
   ),
   {
     async run({ model }, context: AppContext) {
-      const beforePath = model.before;
-      const afterPath = model.after;
+      const writeOutput = async (path: string, data: Uint8Array): Promise<void> => {
+        context.signal.throwIfAborted();
+        await writeFileAtomic(path, data, { overwrite: model.force });
+      };
+      const beforePath = resolvePath(context.cwd, model.before);
+      const afterPath = resolvePath(context.cwd, model.after);
       let before = await loadRgba(beforePath);
       let after = await loadRgba(afterPath);
       let aligned = false;
@@ -170,7 +180,7 @@ export const compare = defineCommand(
         overwrite: model.force,
         ...(model.out === undefined ? {} : { out: model.out }),
       });
-      await writeFileAtomic(
+      await writeOutput(
         diffPath,
         await sharp(diff, { raw: { width, height, channels: 4 } })
           .png()
@@ -198,7 +208,7 @@ export const compare = defineCommand(
         const afterPng = await sharp(after.data, { raw: { width, height, channels: 4 } })
           .png()
           .toBuffer();
-        await writeFileAtomic(
+        await writeOutput(
           sidePath,
           await canvas
             .composite([
@@ -224,7 +234,7 @@ export const compare = defineCommand(
         })
           .png()
           .toBuffer();
-        await writeFileAtomic(
+        await writeOutput(
           overlayPath,
           await sharp(before.data, { raw: { width, height, channels: 4 } })
             .composite([{ input: overlayPng, blend: "over" }])

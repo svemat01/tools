@@ -2,7 +2,7 @@
 
 A personal CLI toolkit on [Bun](https://bun.com), [`@bomb.sh/router`](https://bomb.sh/docs/router/) and [`@bomb.sh/tab`](https://bomb.sh/docs/tab/).
 
-`src/kit/` is a thin integration layer. Commands are native Router definitions. The kit attaches handlers, checks the composed tree at compile time, runs it, and generates Tab shell completion from the same definitions. It never hides either library: Router intents, models and printers, and Tab's native command objects, all stay reachable.
+`src/kit/` is the integration layer for parsing, execution, type verification and shell completion. Commands are native Router definitions. The kit attaches handlers, checks the composed tree at compile time, runs it, and generates Tab shell completion from the same definitions. It never hides either library: Router intents, models and printers, and Tab's native command objects, all stay reachable.
 
 ```bash
 bun install
@@ -64,7 +64,9 @@ sv img compare before.png after.png --max-diff 0.5
 sv img info cover.png hero.jpg
 ```
 
-Existing outputs are never replaced unless you pass `--force`; otherwise the tool picks `name-1.webp`, `name-2.webp`, and so on. `--dry-run` prints the plan without writing. Originals are preserved.
+Existing outputs are never replaced unless you pass `--force`; otherwise the tool picks `name-1.webp`, `name-2.webp`, and so on. Batch destinations are reserved during planning, so dry runs handle colliding filenames consistently. If an output appears after planning, writing fails instead of replacing it. `--dry-run` performs the transform to report sizes but writes no files. Originals are preserved by default; `--force` can replace an original when it is also the output path.
+
+`img web` preserves existing target-format bytes when resizing is unnecessary. Pass `--reencode` or an explicit `--quality` to recompress them. `--force` controls replacement, independently of recompression. `img og` preserves PNG pixel values by default; `--palette` explicitly enables palette quantization.
 
 ### Blog
 
@@ -76,7 +78,9 @@ sv blog prepare posts/ --dry-run
 sv blog prepare posts/ --yes
 ```
 
-`check` validates metadata, local links and media, alt text, slugs, oversized assets, Notion export artifacts, tracking parameters and Unicode. `prepare` previews every edit before writing, removes Notion artifacts, strips tracking parameters, replaces invisible characters, normalizes blank lines, and rewrites referenced images. It never deletes an original unless the config sets `prepare.deleteOriginals: true` (or you pass `--delete-originals`). It never publishes or opens a pull request.
+`check` validates metadata, local links and media, alt text, slugs, oversized assets, Notion export artifacts, tracking parameters and Unicode. `prepare` previews every edit before writing, removes Notion artifacts, strips tracking parameters, replaces invisible characters, normalizes blank lines, and rewrites referenced images. Deletion requires `prepare.deleteOriginals: true` (or `--delete-originals`). Even then, shared/public assets and originals with possible remaining references are preserved. Cleanup protects code, frontmatter and MDX expressions; ambiguous URL source syntax is left unchanged. Functional query parameters such as `s`, `source` and `ref` are preserved.
+
+Preparation shares image plans across posts and checks input fingerprints before applying changes. Entries are updated sequentially; originals are considered for deletion only after all entries succeed. Individual writes are atomic, but the batch has no rollback: failures report completed writes for recovery. Encoded image data is held once per unique asset until application. JSON output requires `--yes` to apply (`--dry-run --json` previews without approval). It never publishes or opens a pull request.
 
 Minimal config:
 
@@ -105,7 +109,7 @@ sv gremlins docs/ --fix --dry-run      # preview safe replacements
 sv gremlins docs/ --fix --yes          # apply, preserving encoding and line endings
 ```
 
-Scanning and fixing are separate. `--fix` previews first, asks for confirmation on a TTY, and refuses to overwrite a file that changed after the scan. Typography replacements (curly quotes, en dashes) require `--fix-typography`.
+Scanning and fixing are separate. `--fix` previews first, asks for confirmation on a TTY, and refuses to overwrite a file that changed after the scan. Typography replacements (curly quotes, en dashes) require `--fix-typography`. Missing targets and scan errors produce a failure exit status. Binary/non-UTF-8 files and files above `--max-bytes` are intentionally skipped and reported. Dry runs report findings as remaining and exit nonzero while findings exist. Replacement preserves file permissions. Explicit `gremlins --fix` applies across the selected file, including literal strings; review the preview when changing source code.
 
 ### Tunnel
 
@@ -114,7 +118,7 @@ sv tunnel 3000
 sv tunnel 8080 --host 127.0.0.1 --copy
 ```
 
-`tunnel` prints an exposure warning, starts a Cloudflare Quick Tunnel with `cloudflared`, prints the public URL, and cleans up the child process on Ctrl+C. It does not require a Cloudflare account. Quick Tunnel URLs are temporary and public; do not expose sensitive services.
+`tunnel` prints an exposure warning, starts a Cloudflare Quick Tunnel with `cloudflared`, prints the public URL, and cleans up the child process on Ctrl+C. It does not require a Cloudflare account. Quick Tunnel URLs are temporary and public; do not expose sensitive services. `--json` emits the URL as soon as the tunnel is ready and keeps running until stopped.
 
 ### Video
 
@@ -222,7 +226,7 @@ This was a deliberate choice; see [docs/architecture.md](docs/architecture.md#op
 
 ### Application context
 
-Handlers get a second argument: the context. By default it's `BaseContext` (`program`, `stdout`, `stderr`, `env`, `cwd`, `signal`), and tests replace these through `app.run(argv, { stdout, env, cwd, ... })`. Application services live in `src/context.ts`. A handler that needs them annotates the parameter:
+Handlers get a second argument: the context. By default it's `BaseContext` (`program`, `stdout`, `stderr`, `env`, `cwd`, `signal`), and tests replace these through `app.run(argv, { stdout, env, cwd, ... })`. Application services live in `src/context.ts`, including injectable `confirm()` and `readStdin()` functions. Prompts use stderr so JSON stdout stays parseable. A handler that needs them annotates the parameter:
 
 ```ts
 run({ model }, context: AppContext) {
@@ -305,6 +309,7 @@ src/
   options.ts         root options (importable as an ancestor)
   context.ts         AppContext and its factory
   commands/          one module per command; groups are folders
+  lib/               filesystem, media, text and blog operations
   kit/               the Router + Tab integration (see docs/architecture.md)
 test/
 ```

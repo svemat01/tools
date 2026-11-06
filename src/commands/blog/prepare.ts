@@ -4,15 +4,16 @@ import { z } from "zod";
 import type { AppContext } from "../../context.ts";
 import { complete, defineCommand, directories } from "../../kit/index.ts";
 import {
-  applyBlogPrepare,
+  applyBlogPreparePlans,
+  createPrepareSession,
   loadBlogConfig,
   planBlogPrepare,
+  PrepareApplyError,
   type PreparePlan,
   resolveBlogProject,
 } from "../../lib/blog.ts";
 import { displayPath } from "../../lib/fs.ts";
 import { color, formatBytes, formatSavings, json, plural, useColor } from "../../lib/output.ts";
-import { confirm } from "../../lib/prompt.ts";
 
 interface Failure {
   readonly entry: string;
@@ -71,22 +72,34 @@ export const prepare = defineCommand(
 
       const plans: PreparePlan[] = [];
       const failures: Failure[] = [];
+      const session = createPrepareSession();
+      const plannedEntries = new Set<string>();
 
       for (const target of targets) {
-        const project = await resolveBlogProject(target, context.cwd, config);
+        context.signal.throwIfAborted();
+        let project;
+        try {
+          project = await resolveBlogProject(target, context.cwd, config);
+        } catch (error) {
+          failures.push({ entry: target, error: error instanceof Error ? error.message : String(error) });
+          continue;
+        }
         if (project.posts.length === 0) {
-          context.stderr.write(
-            `No blog posts found under ${target}. Check --config and the postsDir setting.\n`,
-          );
-          return 1;
+          failures.push({ entry: target, error: "No blog posts found; check --config and postsDir" });
+          continue;
         }
         for (const post of project.posts) {
+          context.signal.throwIfAborted();
+          if (plannedEntries.has(post.entry)) continue;
+          plannedEntries.add(post.entry);
           try {
             plans.push(
               await planBlogPrepare(post, config, {
                 cwd: context.cwd,
                 noImages: model.noImages,
                 noUnicode: model.noUnicode,
+                session,
+                signal: context.signal,
               }),
             );
           } catch (error) {
@@ -104,11 +117,24 @@ export const prepare = defineCommand(
 
       const changed = plans.filter((plan) => plan.changed);
       const editCount = changed.reduce((count, plan) => count + plan.edits.length, 0);
-      const images = changed.flatMap((plan) => plan.images);
+      const images = [
+        ...new Map(changed.flatMap((plan) => plan.images).map((image) => [image.output, image])).values(),
+      ];
       const before = images.reduce((total, image) => total + image.before, 0);
       const after = images.reduce((total, image) => total + image.after, 0);
 
       if (failures.length > 0) {
+        if (model.json) {
+          context.stdout.write(
+            json({
+              command: "blog prepare",
+              dryRun: model.dryRun === true,
+              applied: false,
+              posts: plans.map(serialisePlan),
+              failures,
+            }),
+          );
+        }
         context.stderr.write("Aborted before writing because some posts could not be prepared.\n");
         return 1;
       }
@@ -130,76 +156,91 @@ export const prepare = defineCommand(
         return 0;
       }
 
+      if (!model.json) {
+        const useColour = useColor(context.stdout, context.env);
+        const title = loaded.config.name ? `Blog prepare: ${loaded.config.name}` : "Blog prepare";
+        context.stdout.write(`${color(title, "bold", useColour)}\n`);
+        for (const plan of changed) {
+          context.stdout.write(`\n${color(displayPath(context.cwd, plan.entry), "bold", useColour)}\n`);
+          for (const edit of plan.edits) {
+            const line = edit.line === undefined ? "" : `line ${edit.line}  `;
+            context.stdout.write(`  ${line}${edit.reason}\n`);
+            if (edit.before !== undefined && edit.after !== undefined) {
+              context.stdout.write(`      ${edit.before} → ${edit.after}\n`);
+            }
+          }
+        }
+
+        if (images.length > 0) {
+          context.stdout.write(`\n${color("Media", "bold", useColour)}\n`);
+          for (const image of images) {
+            context.stdout.write(
+              `  ${displayPath(context.cwd, image.input)} → ${displayPath(context.cwd, image.output)}  ` +
+                `${formatBytes(image.before)} → ${formatBytes(image.after)} (${formatSavings(
+                  image.before,
+                  image.after,
+                )})\n`,
+            );
+          }
+        }
+
+        context.stdout.write(
+          `\n${color("Plan", "bold", useColour)}  ${changed.length} ${plural(changed.length, "post")} · ` +
+            `${editCount} ${plural(editCount, "edit")} · ${images.length} ${plural(images.length, "image")}` +
+            `${images.length > 0 ? ` · ${formatBytes(before)} → ${formatBytes(after)}` : ""}\n`,
+        );
+      }
+
       const canApply =
         model.dryRun === true ||
         model.yes === true ||
-        (await confirm(`Apply changes to ${changed.length} ${plural(changed.length, "post")}?`));
-
-      if (!model.dryRun && !canApply) {
-        context.stderr.write(
-          model.yes
-            ? "cancelled; no files were modified\n"
-            : "refusing to modify files without --yes in a non-interactive terminal\n",
-        );
-        return 1;
+        (!model.json &&
+          (await context.confirm(`Apply changes to ${changed.length} ${plural(changed.length, "post")}?`)));
+      const applied: Awaited<ReturnType<typeof applyBlogPreparePlans>> = [];
+      let applyError: string | undefined;
+      let completedEntries: readonly string[] = [];
+      let publishedImages: readonly string[] = [];
+      let removedOriginals: readonly string[] = [];
+      if (!canApply) {
+        applyError = "cancelled or non-interactive input; use --yes to apply changes";
+      } else if (!model.dryRun) {
+        try {
+          applied.push(...(await applyBlogPreparePlans(changed, config, { signal: context.signal })));
+          completedEntries = applied.map((result) => result.plan.entry);
+          publishedImages = [...new Set(applied.flatMap((result) => result.writtenImages))];
+          removedOriginals = [...new Set(applied.flatMap((result) => result.deletedOriginals))];
+        } catch (error) {
+          applyError = error instanceof Error ? error.message : String(error);
+          if (error instanceof PrepareApplyError) {
+            completedEntries = error.completedEntries;
+            publishedImages = error.writtenImages;
+            removedOriginals = error.deletedOriginals;
+          }
+        }
       }
-
-      const applied =
-        model.dryRun === true ? [] : await Promise.all(changed.map((plan) => applyBlogPrepare(plan, config)));
 
       if (model.json) {
         context.stdout.write(
           json({
             command: "blog prepare",
             dryRun: model.dryRun === true,
-            applied: model.dryRun !== true,
+            applied: !model.dryRun && applyError === undefined,
             posts: changed.map(serialisePlan),
-            writtenImages: applied.flatMap((result) =>
-              result.writtenImages.map((path) => displayPath(context.cwd, path)),
-            ),
-            deletedOriginals: applied.flatMap((result) =>
-              result.deletedOriginals.map((path) => displayPath(context.cwd, path)),
-            ),
+            completedEntries: completedEntries.map((path) => displayPath(context.cwd, path)),
+            writtenImages: publishedImages.map((path) => displayPath(context.cwd, path)),
+            deletedOriginals: removedOriginals.map((path) => displayPath(context.cwd, path)),
+            retainedOriginals: applied.flatMap((result) => result.retainedOriginals),
             failures,
+            error: applyError,
             totals: { images: images.length, before, after },
           }),
         );
-        return 0;
+        return applyError === undefined ? 0 : 1;
       }
-
-      const useColour = useColor(context.stdout, context.env);
-      const title = loaded.config.name ? `Blog prepare: ${loaded.config.name}` : "Blog prepare";
-      context.stdout.write(`${color(title, "bold", useColour)}\n`);
-      for (const plan of changed) {
-        context.stdout.write(`\n${color(displayPath(context.cwd, plan.entry), "bold", useColour)}\n`);
-        for (const edit of plan.edits) {
-          const line = edit.line === undefined ? "" : `line ${edit.line}  `;
-          context.stdout.write(`  ${line}${edit.reason}\n`);
-          if (edit.before !== undefined && edit.after !== undefined) {
-            context.stdout.write(`      ${edit.before} → ${edit.after}\n`);
-          }
-        }
+      if (applyError !== undefined) {
+        context.stderr.write(`${applyError}\n`);
+        return 1;
       }
-
-      if (images.length > 0) {
-        context.stdout.write(`\n${color("Media", "bold", useColour)}\n`);
-        for (const image of images) {
-          context.stdout.write(
-            `  ${displayPath(context.cwd, image.input)} → ${displayPath(context.cwd, image.output)}  ` +
-              `${formatBytes(image.before)} → ${formatBytes(image.after)} (${formatSavings(
-                image.before,
-                image.after,
-              )})\n`,
-          );
-        }
-      }
-
-      context.stdout.write(
-        `\n${color("Plan", "bold", useColour)}  ${changed.length} ${plural(changed.length, "post")} · ` +
-          `${editCount} ${plural(editCount, "edit")} · ${images.length} ${plural(images.length, "image")}` +
-          `${images.length > 0 ? ` · ${formatBytes(before)} → ${formatBytes(after)}` : ""}\n`,
-      );
-
       if (model.dryRun) {
         context.stdout.write("Dry run: no files were written.\n");
         return 0;
@@ -211,7 +252,12 @@ export const prepare = defineCommand(
           "image",
         )}.\n`,
       );
-      const deleted = applied.flatMap((result) => result.deletedOriginals);
+      const deleted = [...new Set(applied.flatMap((result) => result.deletedOriginals))];
+      for (const retained of new Map(
+        applied.flatMap((result) => result.retainedOriginals).map((entry) => [entry.path, entry]),
+      ).values()) {
+        context.stderr.write(`Preserved ${displayPath(context.cwd, retained.path)}: ${retained.reason}\n`);
+      }
       if (deleted.length > 0) {
         context.stdout.write(`Deleted ${deleted.length} replaced ${plural(deleted.length, "original")}.\n`);
       }

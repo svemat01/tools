@@ -6,8 +6,8 @@
  * `name-2.ext`, ... instead of clobbering it.
  */
 
-import { existsSync, statSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, link, lstat, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { runCommand } from "./process.ts";
@@ -52,6 +52,7 @@ export interface DiscoveryResult {
   readonly files: readonly string[];
   readonly missing: readonly string[];
   readonly unsupported: readonly string[];
+  readonly errors: readonly { readonly path: string; readonly error: string }[];
 }
 
 /** Resolve `~`, relative paths and `.` against a command's cwd. */
@@ -132,6 +133,8 @@ export interface PlanOutputOptions {
   /** Output directory for batch commands. */
   readonly outDir?: string;
   readonly overwrite?: boolean;
+  /** Destinations reserved by this batch, including during dry runs. */
+  readonly reserved?: Set<string>;
 }
 
 /**
@@ -168,22 +171,79 @@ export async function planOutputPath(options: PlanOutputOptions): Promise<string
     }
     target = nextAvailablePath(target);
   }
+  if (options.reserved) {
+    const directory = dirname(target);
+    const extension = extname(target);
+    const stem = basename(target, extension);
+    const desired = target;
+    let counter = 1;
+    while (options.reserved.has(target)) {
+      if (counter >= 10_000) throw new Error(`Could not reserve an output name for ${desired}`);
+      target = join(directory, `${stem}-${counter++}${extension}`);
+      if (!overwrite) target = nextAvailablePath(target);
+    }
+    options.reserved.add(target);
+  }
   return target;
 }
 
-/** Write via a sibling temporary file, so a crash cannot leave a half file. */
-export async function writeFileAtomic(path: string, data: Uint8Array): Promise<void> {
+export interface WriteOptions {
+  /** Replacement must be explicit; otherwise publication fails if the destination exists. */
+  readonly overwrite?: boolean;
+  /** Refuse replacement if the destination no longer has these bytes. */
+  readonly expectedBytes?: Uint8Array;
+}
+
+/** Publish a completed sibling temporary file. Hard-link creation atomically refuses clobbering. */
+export async function publishFileAtomic(
+  temporary: string,
+  path: string,
+  options: WriteOptions = {},
+): Promise<void> {
+  if (!options.overwrite) {
+    await chmod(temporary, 0o666 & ~process.umask());
+    await link(temporary, path);
+    await rm(temporary);
+    return;
+  }
+  let existing;
+  try {
+    existing = await lstat(path);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  if (existing && !existing.isFile()) throw new Error(`Refusing to replace a non-regular file: ${path}`);
+  if (options.expectedBytes !== undefined) {
+    if (!existing || !Buffer.from(await readFile(path)).equals(options.expectedBytes)) {
+      throw new Error(`${path} changed before writing; re-run the command`);
+    }
+  }
+  await chmod(temporary, existing ? existing.mode & 0o7777 : 0o666 & ~process.umask());
+  await rename(temporary, path);
+}
+
+/** Write complete bytes before publication, preserving permissions on explicit replacement. */
+export async function writeFileAtomic(
+  path: string,
+  data: Uint8Array,
+  options: WriteOptions = {},
+): Promise<void> {
   await ensureDirectory(dirname(path));
   const temporary = join(
     dirname(path),
     `.${basename(path)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`,
   );
   try {
-    await writeFile(temporary, data);
-    await rename(temporary, path);
-  } catch (error) {
+    // Keep staged contents private, even when replacing a restricted file.
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(data);
+    } finally {
+      await handle.close();
+    }
+    await publishFileAtomic(temporary, path, options);
+  } finally {
     await rm(temporary, { force: true });
-    throw error;
   }
 }
 
@@ -211,6 +271,7 @@ export async function discoverFiles(
   const files = new Set<string>();
   const missing: string[] = [];
   const unsupported: string[] = [];
+  const errors: { path: string; error: string }[] = [];
   const extensions = options.extensions?.map((value) => value.replace(/^\./, "").toLowerCase());
 
   for (const value of paths) {
@@ -218,8 +279,9 @@ export async function discoverFiles(
     let info;
     try {
       info = await stat(target);
-    } catch {
-      missing.push(target);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") missing.push(target);
+      else errors.push({ path: target, error: error instanceof Error ? error.message : String(error) });
       continue;
     }
 
@@ -243,8 +305,8 @@ export async function discoverFiles(
     }
 
     const found = options.respectGitIgnore
-      ? ((await gitFiles(target)) ?? (await walkFiles(target, options)))
-      : await walkFiles(target, options);
+      ? ((await gitFiles(target, options, errors)) ?? (await walkFiles(target, options, errors)))
+      : await walkFiles(target, options, errors);
 
     for (const file of found) {
       if (extensions && !hasExtension(file, extensions)) continue;
@@ -258,10 +320,15 @@ export async function discoverFiles(
     files: [...files].sort((a, b) => a.localeCompare(b)),
     missing,
     unsupported,
+    errors,
   };
 }
 
-async function walkFiles(root: string, options: DiscoverOptions): Promise<string[]> {
+async function walkFiles(
+  root: string,
+  options: DiscoverOptions,
+  errors: { path: string; error: string }[],
+): Promise<string[]> {
   const found: string[] = [];
   const extensions = options.extensions?.map((value) => value.replace(/^\./, "").toLowerCase());
 
@@ -269,7 +336,8 @@ async function walkFiles(root: string, options: DiscoverOptions): Promise<string
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      errors.push({ path: directory, error: error instanceof Error ? error.message : String(error) });
       return;
     }
     for (const entry of entries) {
@@ -292,7 +360,11 @@ async function walkFiles(root: string, options: DiscoverOptions): Promise<string
 }
 
 /** `git ls-files` is the most accurate .gitignore implementation available. */
-async function gitFiles(directory: string): Promise<string[] | undefined> {
+async function gitFiles(
+  directory: string,
+  options: DiscoverOptions,
+  errors: { path: string; error: string }[],
+): Promise<string[] | undefined> {
   const top = await runCommand("git", ["-C", directory, "rev-parse", "--show-toplevel"]);
   if (top.code !== 0) return undefined;
   const root = top.stdout.trim();
@@ -316,8 +388,18 @@ async function gitFiles(directory: string): Promise<string[] | undefined> {
   for (const entry of listed.stdout.split("\0")) {
     if (!entry) continue;
     const path = join(root, entry);
-    if (entry.split("/").some((part) => IGNORE_DIRECTORIES.has(part))) continue;
-    if (existsSync(path) && statSync(path).isFile()) files.push(path);
+    const directories = relative(directory, path).split(sep).slice(0, -1);
+    if (
+      directories.some(
+        (part) => IGNORE_DIRECTORIES.has(part) || (!options.includeHidden && part.startsWith(".")),
+      )
+    )
+      continue;
+    try {
+      if ((await lstat(path)).isFile()) files.push(path);
+    } catch (error) {
+      errors.push({ path, error: error instanceof Error ? error.message : String(error) });
+    }
   }
   return files;
 }

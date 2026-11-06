@@ -5,7 +5,6 @@ import type { AppContext } from "../context.ts";
 import { complete, defineCommand, files } from "../kit/index.ts";
 import { displayPath } from "../lib/fs.ts";
 import { color, formatBytes, json, plural, useColor } from "../lib/output.ts";
-import { confirm } from "../lib/prompt.ts";
 import { fixScans, isFixable, scanPaths, type Severity, unicodeName } from "../lib/unicode.ts";
 
 const SEVERITY_ORDER: Record<Severity, number> = { info: 0, warn: 1, error: 2 };
@@ -74,6 +73,65 @@ export const gremlins = defineCommand(
         }))
         .filter((entry) => entry.findings.length > 0);
 
+      for (const error of summary.errors) {
+        context.stderr.write(`${displayPath(context.cwd, error.path)}: ${error.reason}\n`);
+      }
+      if (!model.json) {
+        const useColour = useColor(context.stdout, context.env);
+        context.stdout.write(
+          `${color("Gremlins scan", "bold", useColour)}  ${targets.map((target) => target).join(", ")}\n`,
+        );
+        for (const { file, findings } of visible) {
+          context.stdout.write(`\n${color(displayPath(context.cwd, file.path), "bold", useColour)}\n`);
+          for (const finding of findings) {
+            const levelColor =
+              finding.rule.severity === "error"
+                ? "red"
+                : finding.rule.severity === "warn"
+                  ? "yellow"
+                  : "cyan";
+            const label = color(finding.rule.severity.toUpperCase().padEnd(5), levelColor, useColour);
+            const action = isFixable(finding.rule, model.fixTypography)
+              ? finding.rule.replacement === ""
+                ? " → remove"
+                : ` → ${JSON.stringify(finding.rule.replacement)}`
+              : "";
+            context.stdout.write(
+              `  ${label} ${`${finding.line}:${finding.column}`.padEnd(10)} ` +
+                `${unicodeName(finding.codePoint)} ${finding.rule.description}${action}\n`,
+            );
+            context.stdout.write(`        ${finding.preview}\n`);
+          }
+        }
+
+        if (summary.totalFindings === 0 && summary.errors.length === 0) {
+          context.stdout.write(`${color("No gremlins found.", "green", useColour)}\n`);
+        } else {
+          context.stdout.write(
+            `\n${color("Summary", "bold", useColour)}  ${summary.totalFindings} ${plural(
+              summary.totalFindings,
+              "finding",
+            )} · ${visible.length} ${plural(visible.length, "file")} · ${summary.fixableFindings} auto-fixable\n`,
+          );
+        }
+        if (summary.skipped.length > 0) {
+          context.stdout.write(
+            `${color(`${summary.scanned} scanned · ${summary.skipped.length} skipped`, "gray", useColour)}\n`,
+          );
+        }
+      }
+      if (model.fix && !model.dryRun) {
+        const previewOutput = model.json ? context.stderr : context.stdout;
+        for (const file of summary.files) {
+          for (const finding of file.findings.filter((finding) =>
+            isFixable(finding.rule, model.fixTypography),
+          )) {
+            previewOutput.write(
+              `  fix ${displayPath(context.cwd, file.path)}:${finding.line}:${finding.column} ${unicodeName(finding.codePoint)} → ${JSON.stringify(finding.rule.replacement)}\n`,
+            );
+          }
+        }
+      }
       let fixSummary: Awaited<ReturnType<typeof fixScans>> | undefined;
       let applyError: string | undefined;
       if (model.fix) {
@@ -82,12 +140,13 @@ export const gremlins = defineCommand(
             count + file.findings.filter((finding) => isFixable(finding.rule, model.fixTypography)).length,
           0,
         );
-        if (fixable > 0 && !model.dryRun) {
-          const allowed = model.yes || (await confirm(`Apply ${fixable} replacements?`));
+        if (fixable > 0 && !model.dryRun && !context.signal.aborted) {
+          const allowed = model.yes || (await context.confirm(`Apply ${fixable} replacements?`));
           if (allowed) {
             fixSummary = await fixScans(summary.files, {
               typography: model.fixTypography,
               dryRun: false,
+              signal: context.signal,
             });
           } else {
             applyError =
@@ -99,16 +158,21 @@ export const gremlins = defineCommand(
           fixSummary = await fixScans(summary.files, {
             typography: model.fixTypography,
             dryRun: true,
+            signal: context.signal,
           });
         }
       }
 
-      const remaining = summary.totalFindings - (fixSummary?.replacements ?? 0);
+      const remaining = summary.totalFindings - (model.dryRun ? 0 : (fixSummary?.replacements ?? 0));
       if (model.json) {
         context.stdout.write(
           json({
             command: "gremlins",
             scanned: summary.scanned,
+            errors: summary.errors.map((entry) => ({
+              path: displayPath(context.cwd, entry.path),
+              reason: entry.reason,
+            })),
             skipped: summary.skipped.map((entry) => ({
               path: displayPath(context.cwd, entry.path),
               reason: entry.reason,
@@ -151,48 +215,6 @@ export const gremlins = defineCommand(
         );
       } else {
         const useColour = useColor(context.stdout, context.env);
-        context.stdout.write(
-          `${color("Gremlins scan", "bold", useColour)}  ${targets.map((target) => target).join(", ")}\n`,
-        );
-        for (const { file, findings } of visible) {
-          context.stdout.write(`\n${color(displayPath(context.cwd, file.path), "bold", useColour)}\n`);
-          for (const finding of findings) {
-            const levelColor =
-              finding.rule.severity === "error"
-                ? "red"
-                : finding.rule.severity === "warn"
-                  ? "yellow"
-                  : "cyan";
-            const label = color(finding.rule.severity.toUpperCase().padEnd(5), levelColor, useColour);
-            const action = isFixable(finding.rule, model.fixTypography)
-              ? finding.rule.replacement === ""
-                ? " → remove"
-                : ` → ${JSON.stringify(finding.rule.replacement)}`
-              : "";
-            context.stdout.write(
-              `  ${label} ${`${finding.line}:${finding.column}`.padEnd(10)} ` +
-                `${unicodeName(finding.codePoint)} ${finding.rule.description}${action}\n`,
-            );
-            context.stdout.write(`        ${finding.preview}\n`);
-          }
-        }
-
-        if (summary.totalFindings === 0) {
-          context.stdout.write(`${color("No gremlins found.", "green", useColour)}\n`);
-        } else {
-          context.stdout.write(
-            `\n${color("Summary", "bold", useColour)}  ${summary.totalFindings} ${plural(
-              summary.totalFindings,
-              "finding",
-            )} · ${visible.length} ${plural(visible.length, "file")} · ${summary.fixableFindings} auto-fixable\n`,
-          );
-        }
-        if (summary.skipped.length > 0) {
-          context.stdout.write(
-            `${color(`${summary.scanned} scanned · ${summary.skipped.length} skipped`, "gray", useColour)}\n`,
-          );
-        }
-
         if (fixSummary) {
           if (fixSummary.changed.length > 0) {
             context.stdout.write(
@@ -225,7 +247,9 @@ export const gremlins = defineCommand(
         }
       }
 
-      return remaining > 0 || applyError !== undefined || context.signal.aborted ? 1 : 0;
+      return remaining > 0 || summary.errors.length > 0 || applyError !== undefined || context.signal.aborted
+        ? 1
+        : 0;
     },
   },
 );
