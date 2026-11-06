@@ -31,7 +31,7 @@ Existing outputs are never replaced unless you pass `--force`; otherwise the too
 
 ## Choose quality visually
 
-`sv img tune hero.jpg --width 1600 --qualities 60,75,85 --format webp --out review.html` exports one self-contained offline HTML review. Select quality, drag the comparison divider, zoom to output pixels and scroll to pan both images together. Download the selected encoded image from the report. `--json` prints the report path and variant metadata; no browser opens and no separate variant files are written. Existing report names receive a numeric suffix, including explicit `--out`; there is no overwrite option.
+`sv img tune hero.jpg --width 1600 --qualities 60,75,85 --format webp --out review.html` exports one self-contained offline HTML review. Select quality, drag the comparison divider, zoom to output pixels and scroll to pan both images together. Download the selected encoded image or copy its reproducible conversion command from the report. Commands use source/output filenames rather than private absolute paths; run them from the source image directory in a POSIX shell. If browser clipboard access is unavailable, the command is selected for manual copying. `--json` prints the report path and variant metadata; no application opens unless `--open` is explicit, and no separate variant files are written. `sv img tune hero.jpg --open` opens the completed report with your local default application. Existing report names receive a numeric suffix, including explicit `--out`; there is no overwrite option.
 
 Tune defaults to WebP, width 1600 and qualities 60,75,85, never upscales, applies orientation, and strips metadata. The original reference is a lossless PNG at the output dimensions; byte savings compare each encoding with the source file. Only the filename and relevant dimensions/settings are included. V1 accepts static raster images supported by Sharp, rejects SVG and animation/multiple pages, and caps inputs at 12 MiB/24 megapixels, width at 2560, distinct qualities at five, and total embedded image bytes at 20 MiB (roughly 27 MiB HTML). Reduce width or variant count if the report budget is exceeded. AVIF is optional and slower. Source files are preserved.
 
@@ -41,3 +41,5 @@ Tune defaults to WebP, width 1600 and qualities 60,75,85, never upscales, applie
 - Use `img tune` when you want to choose quality by looking at the result.
 - Use [`ready`](ready.md) for a preview-first image batch with recorded outputs and optional reports.
 - Add `--record` to `img web` when you need [history and undo](history.md).
+
+On interactive terminals, tuning reports inspect/encode/review/write stages on stderr before printing the finished report URL. Redirected output and JSON omit transient progress. An opener failure leaves the report saved and provides its file URL for manual opening.

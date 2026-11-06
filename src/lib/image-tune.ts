@@ -5,6 +5,7 @@ import { basename, extname, join } from "node:path";
 
 import { renderImageReview } from "./image-review.ts";
 import { inspectImage, transformImage } from "./image.ts";
+import type { ProgressEvent } from "./progress.ts";
 
 export const TUNE_LIMITS = {
   inputBytes: 12 * 1024 * 1024,
@@ -18,6 +19,7 @@ export interface TuneOptions {
   readonly qualities?: readonly number[];
   readonly format?: "webp" | "avif";
   readonly signal?: AbortSignal;
+  readonly onProgress?: (event: ProgressEvent) => void;
 }
 export interface ReviewImage {
   readonly url: string;
@@ -68,6 +70,7 @@ export function validateTuneOptions(options: TuneOptions): {
 export async function createImageReview(input: string, options: TuneOptions = {}): Promise<ImageReview> {
   const { width, qualities, format } = validateTuneOptions(options);
   options.signal?.throwIfAborted();
+  options.onProgress?.({ phase: "inspect", path: input, current: 1, total: 1 });
   const handle = await open(input, "r");
   let source: Buffer;
   try {
@@ -98,6 +101,7 @@ export async function createImageReview(input: string, options: TuneOptions = {}
       throw new Error("Tune input exceeds 24 megapixel limit");
     options.signal?.throwIfAborted();
     const resize = { width, withoutEnlargement: true };
+    options.onProgress?.({ phase: "review", path: input });
     const reference = await transformImage(snapshot, { resize, encode: { format: "png" } });
     let embeddedBytes = reference.bytes;
     const checkBudget = () => {
@@ -110,7 +114,8 @@ export async function createImageReview(input: string, options: TuneOptions = {}
       filename.slice(0, filename.length - extname(filename).length).replace(/[^\p{L}\p{N}._-]/gu, "_") ||
       "image";
     const variants: ReviewVariant[] = [];
-    for (const quality of qualities) {
+    for (const [index, quality] of qualities.entries()) {
+      options.onProgress?.({ phase: "encode", path: input, current: index + 1, total: qualities.length });
       options.signal?.throwIfAborted();
       const result = await transformImage(snapshot, { resize, encode: { format, quality } });
       embeddedBytes += result.bytes;
@@ -153,5 +158,6 @@ export async function buildImageTuneReport(
   options: TuneOptions = {},
 ): Promise<{ html: string; review: ImageReview }> {
   const review = await createImageReview(input, options);
+  options.onProgress?.({ phase: "review", path: input });
   return { html: renderImageReview(review), review };
 }

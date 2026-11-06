@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Script } from "node:vm";
@@ -53,7 +53,10 @@ test("embedded bytes are oriented, bounded, stripped and truly encoded in select
   const embedded = JSON.parse(
     html.match(/<script id="review-data" type="application\/json">([\s\S]*?)<\/script>/)![1]!,
   );
-  expect(embedded).toEqual(review);
+  expect(embedded).toMatchObject(review);
+  expect(embedded.commands).toHaveLength(review.variants.length);
+  expect(embedded.commands[0]).toContain("sv img web");
+  expect(html).not.toContain(input);
   const script = html.match(/<script>\n([\s\S]*?)<\/script>/)![1]!;
   expect(() => new Script(script)).not.toThrow();
   expect(script).not.toContain("innerHTML");
@@ -176,6 +179,14 @@ test("emitted controls select downloads, zoom a shared grid and move the divider
     style: Record<string, string> = {};
     events: Record<string, (event?: unknown) => void> = {};
     children: Element[] = [];
+    selected = false;
+    focused = false;
+    focus() {
+      this.focused = true;
+    }
+    select() {
+      this.selected = true;
+    }
     append(child: Element) {
       this.children.push(child);
     }
@@ -198,10 +209,13 @@ test("emitted controls select downloads, zoom a shared grid and move the divider
     "divider",
     "line",
     "image-status",
+    "conversion-command",
+    "copy-command",
+    "command-status",
   ];
   const nodes = Object.fromEntries(ids.map((id) => [id, new Element()]));
   const node = (id: string) => nodes[id]!;
-  node("review-data").textContent = JSON.stringify(review);
+  node("review-data").textContent = html.match(/type="application\/json">([\s\S]*?)<\/script>/)![1]!;
   node("zoom").value = "fit";
   node("divider").value = "50";
   new Script(script).runInNewContext({
@@ -209,6 +223,11 @@ test("emitted controls select downloads, zoom a shared grid and move the divider
     window: { addEventListener() {} },
   });
   expect(node("quality").children).toHaveLength(2);
+  expect(node("conversion-command").value).toContain("--quality 60");
+  await node("copy-command").events.click!();
+  expect(node("command-status").textContent).toContain("copy it manually");
+  expect(node("conversion-command").selected).toBe(true);
+  expect(node("conversion-command").focused).toBe(true);
   expect(node("original").src).toBe(review.reference.url);
   expect(node("encoded").src).toBe(review.variants[0]!.url);
   expect(node("quality").children[0]!.textContent).toContain("bytes");
@@ -221,6 +240,7 @@ test("emitted controls select downloads, zoom a shared grid and move the divider
   node("quality").events.change!();
   expect(node("download").download).toBe(review.variants[1]!.filename);
   expect(node("download").href).toBe(review.variants[1]!.url);
+  expect(node("conversion-command").value).toContain("--quality 85");
   node("zoom").value = "4";
   node("zoom").events.change!();
   expect(node("stage").style).toMatchObject({ width: "80px", height: "160px", imageRendering: "pixelated" });
@@ -228,6 +248,21 @@ test("emitted controls select downloads, zoom a shared grid and move the divider
   node("divider").events.input!();
   expect(node("encoded").style.clipPath).toBe("inset(0 0 0 75%)");
   expect(node("line").style.left).toBe("75%");
+  let copied = "";
+  new Script(script).runInNewContext({
+    document: { getElementById: node, createElement: () => new Element() },
+    window: { addEventListener() {} },
+    navigator: {
+      clipboard: {
+        async writeText(text: string) {
+          copied = text;
+        },
+      },
+    },
+  });
+  await node("copy-command").events.click!();
+  expect(copied).toBe(node("conversion-command").value);
+  expect(node("command-status").textContent).toBe("Command copied.");
 });
 
 test("large lossless reference is refused rather than creating an oversized HTML report", async () => {
@@ -247,4 +282,79 @@ test("large lossless reference is refused rather than creating an oversized HTML
   await expect(createImageReview(input, { width: 1800, qualities: [75] })).rejects.toThrow(
     "20 MiB embedded image limit",
   );
+});
+
+test("conversion commands preserve hostile filenames as inert arguments without private paths", async () => {
+  const { root } = await fixture();
+  const filename = "a 'quoted' $(should-stay-data).png";
+  const input = join(root, filename);
+  await sharp({ create: { width: 12, height: 8, channels: 3, background: "blue" } })
+    .png()
+    .toFile(input);
+  const { html, review } = await buildImageTuneReport(input, { width: 8, qualities: [61] });
+  const embedded = JSON.parse(html.match(/type="application\/json">([\s\S]*?)<\/script>/)![1]!);
+  const command = embedded.commands[0] as string;
+  expect(command).not.toContain(root);
+  const argvLog = join(root, "argv.log");
+  const child = Bun.spawn(["bash", "-c", 'sv() { printf "%s\\0" "$@" > "$SV_ARGV_LOG"; }; ' + command], {
+    cwd: root,
+    env: { ...process.env, SV_ARGV_LOG: argvLog },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await child.exited).toBe(0);
+  expect((await readFile(argvLog, "utf8")).split("\0").slice(0, -1)).toEqual([
+    "img",
+    "web",
+    `./${filename}`,
+    "--width",
+    "8",
+    "--format",
+    "webp",
+    "--quality",
+    "61",
+    "--out",
+    `./${review.variants[0]!.filename}`,
+  ]);
+  expect(html).toContain("source image's directory");
+});
+
+test("tune explicitly opens reports through a fixture opener and reports honest fallback", async () => {
+  const { root, input } = await fixture();
+  const called = join(root, "opened.log");
+  const opener = join(root, process.platform === "darwin" ? "open" : "xdg-open");
+  await writeFile(opener, '#!/bin/sh\nprintf "%s" "$1" > "$SV_OPEN_LOG"\n');
+  await chmod(opener, 0o755);
+  const options = { cwd: root, env: { PATH: root, SV_OPEN_LOG: called } };
+  const silent = await runApp(app, ["img", "tune", input, "--qualities", "75", "--json"], options);
+  expect(silent.code).toBe(0);
+  expect(await Bun.file(called).exists()).toBe(false);
+  expect(JSON.parse(silent.stdout)).toMatchObject({ openRequested: false, opened: false });
+  const opened = await runApp(app, ["img", "tune", input, "--qualities", "75", "--open", "--json"], options);
+  expect(opened.code).toBe(0);
+  expect(JSON.parse(opened.stdout)).toMatchObject({ openRequested: true, opened: true });
+  expect(await readFile(called, "utf8")).toBe(JSON.parse(opened.stdout).reportUrl);
+  const unavailable = await runApp(app, ["img", "tune", input, "--qualities", "75", "--open", "--json"], {
+    cwd: root,
+    env: { PATH: "/nonexistent" },
+  });
+  expect(unavailable.code).toBe(0);
+  expect(JSON.parse(unavailable.stdout)).toMatchObject({ openRequested: true, opened: false });
+  expect(unavailable.stderr).toContain("Report saved");
+  expect(await Bun.file(join(root, JSON.parse(unavailable.stdout).report)).exists()).toBe(true);
+});
+
+test("tune reports actual inspect, encode and review work through optional progress hooks", async () => {
+  const { input } = await fixture();
+  const events: { phase: string; current?: number; total?: number }[] = [];
+  await buildImageTuneReport(input, { qualities: [60, 75, 85], onProgress: (event) => events.push(event) });
+  expect(events[0]?.phase).toBe("inspect");
+  expect(
+    events.filter((event) => event.phase === "encode").map(({ current, total }) => [current, total]),
+  ).toEqual([
+    [1, 3],
+    [2, 3],
+    [3, 3],
+  ]);
+  expect(events.at(-1)?.phase).toBe("review");
 });

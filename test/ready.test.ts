@@ -90,7 +90,8 @@ test("global destinations reserve duplicate basenames; generated outputs are exc
   ]);
   await runApp(app, [...args, "--yes"], opts);
   const next = JSON.parse((await runApp(app, args, opts)).stdout);
-  expect(next.actions).toHaveLength(2);
+  expect(next.actions).toHaveLength(0);
+  expect(next.reused).toHaveLength(2);
   expect(next.entries.some((e: { kind: string }) => e.kind === "generated")).toBe(true);
 });
 test("missing, broken, config failures block all writes; unknown types are honest unsupported entries", async () => {
@@ -374,7 +375,7 @@ test("human preview is readable and its next command retains --cwd and encoding 
     opts,
   );
   expect(result.code).toBe(0);
-  expect(result.stderr).toContain("Ready preview: 1 file · 2 outputs");
+  expect(result.stderr).toContain("Ready preview: 1 file · 2 new outputs");
   expect(result.stderr).toContain('Create image: ".sv-ready/hero image.webp"');
   expect(result.stderr).not.toContain("Suggested argv");
   expect(result.stdout).toContain("Preview only; originals are preserved.");

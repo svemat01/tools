@@ -212,3 +212,37 @@ test("empty and binary text representations are explicitly unsupported", async (
     code: "cancelled",
   });
 });
+
+test("saved clipboard handoffs use exact shell-safe destinations and retain working directory", async () => {
+  const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } })
+    .png()
+    .toBuffer();
+  const f = await fixture(png, "image/png");
+  const name = "a 'quoted' $(still-data).png";
+  const result = await runApp(app, ["--cwd", f.dir, "paste", "--out", name, "--yes", "--json"], {
+    env: f.env,
+  });
+  expect(result.code).toBe(0);
+  const saved = JSON.parse(result.stdout);
+  expect(saved.suggestions).toHaveLength(2);
+  expect(saved.suggestions.join("\n")).not.toContain("<saved-path>");
+  expect(saved.suggestions[1]).toContain("--cwd");
+  expect(saved.suggestions[1]).toContain("img tune");
+  const log = join(f.dir, "handoff.log");
+  const child = Bun.spawn(
+    ["bash", "-c", 'sv() { printf "%s\\0" "$@" > "$SV_ARGV_LOG"; }; ' + saved.suggestions[1]],
+    {
+      env: { ...process.env, SV_ARGV_LOG: log },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  expect(await child.exited).toBe(0);
+  expect((await readFile(log, "utf8")).split("\0").slice(0, -1)).toEqual([
+    "--cwd",
+    f.dir,
+    "img",
+    "tune",
+    join(f.dir, name),
+  ]);
+});

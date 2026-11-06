@@ -11,8 +11,15 @@ import { selectGitChanges } from "./git-selection.ts";
 import { renderImageReview } from "./image-review.ts";
 import { transformImage } from "./image.ts";
 import { classifyFile, inspectPath, type InspectResult } from "./inspect.ts";
-import { contentHash, executeFilePlan, type FileOperation, type OperationOptions } from "./operations.ts";
+import {
+  contentHash,
+  executeFilePlan,
+  type FileOperation,
+  type OperationOptions,
+  readHistory,
+} from "./operations.ts";
 import { assertNoSymlinks, discoverProject, loadProjectConfig } from "./project.ts";
+import { readBoundedRegular, readyRecipe, ReadyReuse, reviewRecipe } from "./ready-reuse.ts";
 
 export const READY_LIMITS = {
   files: 200,
@@ -33,7 +40,7 @@ export interface ReadyOptions extends OperationOptions {
 export interface ReadyEntry {
   path: string;
   kind: string;
-  status: "inspected" | "unsupported" | "skipped" | "error";
+  status: "inspected" | "unsupported" | "skipped" | "reused" | "error";
   reason?: string;
   inspection?: InspectResult;
   issues?: readonly BlogIssue[];
@@ -54,9 +61,14 @@ export interface ReadyAction {
   bytes: number;
   hash: string;
 }
+export interface ReadyReusedAction extends ReadyAction {
+  outputHash: string;
+  recordId: string;
+}
 export interface ReadyPlan {
   entries: ReadyEntry[];
   actions: ReadyAction[];
+  reused: ReadyReusedAction[];
   failures: string[];
   checks: { files: number; errors: number; warnings: number; infos: number; ok: boolean };
   /** Encoded bytes held until application; never include these in CLI output. */
@@ -181,8 +193,9 @@ export async function inspectReady(
     if (project) await loadProjectConfig(project.root);
   }
   for (const path of selected.sort()) await walk(path);
-  for (const path of files.sort()) {
+  for (const [index, path] of files.sort().entries()) {
     options.signal?.throwIfAborted();
+    options.onProgress?.({ phase: "inspect", path, current: index + 1, total: files.length });
     try {
       const project = await discoverProject(path);
       const loaded = project ? await loadProjectConfig(project.root) : null;
@@ -268,9 +281,12 @@ export async function planReady(inspection: ReadyInspection): Promise<ReadyPlan>
   const actions: ReadyAction[] = [];
   const operations: FileOperation[] = [];
   const reserved = new Set<string>();
+  const reused: ReadyReusedAction[] = [];
+  const images = entries.filter((entry) => entry.kind === "image" && entry.status === "inspected");
+  const reuse = images.length ? await ReadyReuse.load(options) : undefined;
+  const outDir = resolve(options.cwd, options.outDir ?? ".sv-ready");
   let outputBytes = 0;
-  for (const entry of entries) {
-    if (entry.kind !== "image" || entry.status !== "inspected") continue;
+  for (const [index, entry] of images.entries()) {
     try {
       options.signal?.throwIfAborted();
       const source = inspection.sources.get(entry.path)!;
@@ -300,72 +316,147 @@ export async function planReady(inspection: ReadyInspection): Promise<ReadyPlan>
         entry.reason = "Already target format within width; pass --quality to reencode";
         continue;
       }
-      const encoded = await transformImage(source, { resize: { width }, encode: { format, quality } });
-      const destination = await planOutputPath({
-        input: entry.path,
-        cwd: options.cwd,
-        outDir: options.outDir ?? ".sv-ready",
-        extension: format,
-        reserved,
+      const recipeHash = readyRecipe({
+        source: entry.path,
+        sourceHash: entry.hash!,
+        outDir,
+        width,
+        quality,
+        explicitQuality: options.quality !== undefined,
+        format,
       });
       const inputs = [{ path: entry.path, hash: entry.hash! }];
-      const pending: FileOperation[] = [{ kind: "create", path: destination, bytes: encoded.data, inputs }];
-      const planned: ReadyAction[] = [
-        { source: entry.path, destination, kind: "image", bytes: encoded.bytes, hash: entry.hash! },
-      ];
-      if (options.review) {
-        const reference = await transformImage(source, { resize: { width }, encode: { format: "png" } });
-        if (reference.bytes + encoded.bytes > 20 * 1024 * 1024)
-          throw new Error("Review exceeds 20 MiB embedded image budget; reduce width");
-        const html = renderImageReview({
-          filename: basename(entry.path),
-          source: {
-            bytes: source.length,
-            width: orientedWidth,
-            height: (info.orientation ?? 1) >= 5 ? info.width : info.height,
-            format: info.format ?? "unknown",
-          },
-          reference: {
-            url: `data:image/png;base64,${reference.data.toString("base64")}`,
-            bytes: reference.bytes,
-            width: reference.width,
-            height: reference.height,
-          },
-          variants: [
-            {
-              url: `data:image/${format};base64,${encoded.data.toString("base64")}`,
-              bytes: encoded.bytes,
-              width: encoded.width,
-              height: encoded.height,
-              quality,
-              format,
-              filename: basename(destination),
-              savings: 100 * (1 - encoded.bytes / source.length),
-            },
-          ],
+      const pending: FileOperation[] = [];
+      const planned: ReadyAction[] = [];
+      const hits: ReadyReusedAction[] = [];
+      options.onProgress?.({ phase: "reuse", path: entry.path, current: index + 1, total: images.length });
+      const imageHit = await reuse!.find(recipeHash, entry.path, entry.hash!, outDir, reserved);
+      let encoded: { data: Buffer; bytes: number; width: number; height: number };
+      let destination: string;
+      if (imageHit) {
+        destination = imageHit.path;
+        reserved.add(destination);
+        const metadata = await sharp(imageHit.bytes).metadata();
+        if (!metadata.width || !metadata.height) throw new Error("Cached image has unknown dimensions");
+        encoded = {
+          data: imageHit.bytes,
+          bytes: imageHit.bytes.length,
+          width: metadata.width,
+          height: metadata.height,
+        };
+        hits.push({
+          source: entry.path,
+          destination,
+          kind: "image",
+          bytes: encoded.bytes,
+          hash: entry.hash!,
+          outputHash: imageHit.outputHash,
+          recordId: imageHit.recordId,
         });
-        const report = await planOutputPath({
+      } else {
+        options.onProgress?.({ phase: "encode", path: entry.path, current: index + 1, total: images.length });
+        encoded = await transformImage(source, { resize: { width }, encode: { format, quality } });
+        destination = await planOutputPath({
           input: entry.path,
           cwd: options.cwd,
-          outDir: options.outDir ?? ".sv-ready",
-          extension: "html",
-          suffix: "-review",
+          outDir,
+          extension: format,
           reserved,
         });
-        pending.push({ kind: "create", path: report, bytes: Buffer.from(html), inputs });
+        pending.push({ kind: "create", path: destination, bytes: encoded.data, inputs, recipeHash });
         planned.push({
           source: entry.path,
-          destination: report,
-          kind: "review",
-          bytes: Buffer.byteLength(html),
+          destination,
+          kind: "image",
+          bytes: encoded.bytes,
           hash: entry.hash!,
         });
+      }
+      if (options.review) {
+        const reportRecipe = reviewRecipe(recipeHash, contentHash(encoded.data), basename(destination));
+        const reportHit = await reuse!.find(reportRecipe, entry.path, entry.hash!, outDir, reserved);
+        if (reportHit) {
+          reserved.add(reportHit.path);
+          hits.push({
+            source: entry.path,
+            destination: reportHit.path,
+            kind: "review",
+            bytes: reportHit.bytes.length,
+            hash: entry.hash!,
+            outputHash: reportHit.outputHash,
+            recordId: reportHit.recordId,
+          });
+        } else {
+          options.onProgress?.({
+            phase: "review",
+            path: entry.path,
+            current: index + 1,
+            total: images.length,
+          });
+          const reference = await transformImage(source, { resize: { width }, encode: { format: "png" } });
+          if (reference.bytes + encoded.bytes > 20 * 1024 * 1024)
+            throw new Error("Review exceeds 20 MiB embedded image budget; reduce width");
+          const html = renderImageReview({
+            filename: basename(entry.path),
+            source: {
+              bytes: source.length,
+              width: orientedWidth,
+              height: (info.orientation ?? 1) >= 5 ? info.width : info.height,
+              format: info.format ?? "unknown",
+            },
+            reference: {
+              url: `data:image/png;base64,${reference.data.toString("base64")}`,
+              bytes: reference.bytes,
+              width: reference.width,
+              height: reference.height,
+            },
+            variants: [
+              {
+                url: `data:image/${format};base64,${encoded.data.toString("base64")}`,
+                bytes: encoded.bytes,
+                width: encoded.width,
+                height: encoded.height,
+                quality,
+                format,
+                filename: basename(destination),
+                savings: 100 * (1 - encoded.bytes / source.length),
+              },
+            ],
+          });
+          const report = await planOutputPath({
+            input: entry.path,
+            cwd: options.cwd,
+            outDir,
+            extension: "html",
+            suffix: "-review",
+            reserved,
+          });
+          pending.push({
+            kind: "create",
+            path: report,
+            bytes: Buffer.from(html),
+            inputs,
+            recipeHash: reportRecipe,
+          });
+          planned.push({
+            source: entry.path,
+            destination: report,
+            kind: "review",
+            bytes: Buffer.byteLength(html),
+            hash: entry.hash!,
+          });
+        }
       }
       outputBytes += pending.reduce((sum, op) => sum + op.bytes.length, 0);
       if (outputBytes > READY_LIMITS.totalBytes)
         throw new Error("Output budget exceeds 64 MiB; select fewer files or reduce width");
       operations.push(...pending);
       actions.push(...planned);
+      reused.push(...hits);
+      if (!pending.length) {
+        entry.status = "reused";
+        entry.reason = "Already prepared; verified recorded output bytes";
+      }
     } catch (error) {
       entry.status = "error";
       entry.reason = message(error);
@@ -377,6 +468,7 @@ export async function planReady(inspection: ReadyInspection): Promise<ReadyPlan>
   return {
     entries,
     actions,
+    reused,
     operations,
     options,
     checks: {
@@ -395,6 +487,25 @@ export async function planReady(inspection: ReadyInspection): Promise<ReadyPlan>
 export async function applyReady(plan: ReadyPlan) {
   if (plan.failures.length)
     throw new Error(`Ready planning failed; no files written:\n${plan.failures.join("\n")}`);
+  // Revalidate every reused dependency before any new mutation or successful no-op.
+  const receipts = plan.reused.length
+    ? await readHistory(plan.options, { limit: 200, maxBytes: 16 * 1024 * 1024 })
+    : [];
+  for (const item of plan.reused) {
+    plan.options.signal?.throwIfAborted();
+    const receipt = receipts.find((record) => record.id === item.recordId);
+    const recorded = receipt?.files.find(
+      (file) => file.path === item.destination && file.afterHash === item.outputHash,
+    );
+    if (!receipt || !["applied", "partial"].includes(receipt.status) || recorded?.status !== "applied")
+      throw new Error(`Recorded output is no longer applied: ${item.destination}`);
+    await assertNoSymlinks(item.source);
+    await assertNoSymlinks(item.destination);
+    if (contentHash(await readBoundedRegular(item.source, READY_LIMITS.inputBytes)) !== item.hash)
+      throw new Error(`Input changed since reuse planning: ${item.source}`);
+    if (contentHash(await readBoundedRegular(item.destination, READY_LIMITS.totalBytes)) !== item.outputHash)
+      throw new Error(`Reused output changed since planning: ${item.destination}`);
+  }
   if (!plan.operations.length) return null;
   return executeFilePlan(plan.operations, plan.options);
 }

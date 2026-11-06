@@ -8,7 +8,7 @@ sv paste --out clipboard.png --yes     # save PNG bytes without overwriting
 sv --cwd ./notes paste --out clip.txt --yes --json
 ```
 
-`paste` explicitly reads the clipboard and classifies PNG images, JWT-shaped text, readable path lists (up to 256 entries), HTTP(S) URLs and generic text. Summaries omit clipboard text, paths, URL contents and tokens; suggested commands use placeholders. JWT detection does not decode or verify a token. Path classification checks local readability only and never executes a path or follows a URL over the network. No models, history receipts or backups are involved.
+`paste` explicitly reads the clipboard and classifies PNG images, JWT-shaped text, readable path lists (up to 256 entries), HTTP(S) URLs and generic text. Summaries omit clipboard text, paths, URL contents and tokens; summaries offer safe actions without reconstructing raw clipboard text. After an explicit save, suggested commands use the actual saved destination and preserve `--cwd`. JWT detection does not decode or verify a token. Path classification checks local readability only and never executes a path or follows a URL over the network. No models, history receipts or backups are involved.
 
 `--out` previews the absolute destination on stderr and asks for confirmation. Noninteractive saves and JSON saves require `--yes`. Saves preserve the exact selected bytes, leave the clipboard intact, use private file permissions (0600), and atomically refuse an existing destination, including symlinks. PNG output must end in `.png`; text cannot be saved under a known image extension. There is no implicit conversion. Read-only summaries write no files.
 

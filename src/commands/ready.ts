@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { argument, command, description, multiple, name, option, schema, toggle } from "@bomb.sh/router";
 import { z } from "zod";
@@ -6,7 +7,9 @@ import { z } from "zod";
 import type { AppContext } from "../context.ts";
 import { complete, defineCommand, directories, files } from "../kit/index.ts";
 import { displayPath } from "../lib/fs.ts";
+import { openLocalFile } from "../lib/open.ts";
 import { formatBytes, json, plural, shellCommand } from "../lib/output.ts";
+import { createProgressReporter } from "../lib/progress.ts";
 import { applyReady, inspectReady, planReady } from "../lib/ready.ts";
 
 export const ready = defineCommand(
@@ -25,6 +28,10 @@ export const ready = defineCommand(
     toggle(name("yes"), description("Authorize application without prompting")),
     toggle(name("dryRun"), description("Preview only, even with --apply or --yes")),
     toggle(name("review"), description("Plan an offline HTML review for each applied image")),
+    toggle(
+      name("open"),
+      description("Open the first report after applying or verifying reuse; implies --review"),
+    ),
     option(
       name("outDir"),
       description("Output directory (default .sv-ready); excluded from discovery"),
@@ -51,6 +58,7 @@ export const ready = defineCommand(
   ),
   {
     async run({ model }, context: AppContext) {
+      const progress = createProgressReporter(context.stderr, { cwd: context.cwd, enabled: !model.json });
       try {
         const program = ["sv", ...(resolve(context.cwd) === process.cwd() ? [] : ["--cwd", context.cwd])];
         const plan = await planReady(
@@ -61,18 +69,20 @@ export const ready = defineCommand(
             changed: model.changed,
             width: model.width,
             format: model.format,
-            review: model.review,
+            review: model.review || model.open,
+            onProgress: progress.report,
             ...(model.quality === undefined ? {} : { quality: model.quality }),
             ...(model.outDir === undefined ? {} : { outDir: model.outDir }),
           }),
         );
+        progress.finish();
         const files = plan.entries.filter(
           (entry) => !["directory", "project", "blog", "generated", "deleted"].includes(entry.kind),
         ).length;
         const unsupported = plan.entries.filter((entry) => entry.status === "unsupported").length;
         const skipped = plan.entries.filter((entry) => entry.status === "skipped").length;
         context.stderr.write(
-          `Ready preview: ${files} ${plural(files, "file")} · ${plan.actions.length} ${plural(plan.actions.length, "output")} · ${unsupported} unsupported · ${skipped} skipped\n`,
+          `Ready preview: ${files} ${plural(files, "file")} · ${plan.actions.length} new ${plural(plan.actions.length, "output")} · ${plan.reused.length} reused · ${unsupported} unsupported · ${skipped} skipped\n`,
         );
         context.stderr.write(
           `Checks: ${plan.checks.errors} ${plural(plan.checks.errors, "error")} · ${plan.checks.warnings} ${plural(plan.checks.warnings, "warning")} · ${plan.checks.infos} info\n`,
@@ -99,17 +109,58 @@ export const ready = defineCommand(
             `Create ${action.kind}: ${JSON.stringify(displayPath(context.cwd, action.destination))} (${formatBytes(action.bytes)}) from ${JSON.stringify(displayPath(context.cwd, action.source))}\n`,
           );
         for (const suggestion of [...suggestions].slice(0, 5)) context.stderr.write(`  Try: ${suggestion}\n`);
-        let status = plan.failures.length ? "blocked" : plan.actions.length ? "planned" : "noop";
+        let status = plan.failures.length
+          ? "blocked"
+          : plan.actions.length
+            ? "planned"
+            : plan.reused.length
+              ? "reused"
+              : "noop";
         let receipt = null;
         let error: string | undefined;
-        if (!plan.failures.length && !model.dryRun && (model.apply || model.yes) && plan.actions.length) {
-          if (model.json && !model.yes) {
+        if (
+          !plan.failures.length &&
+          !model.dryRun &&
+          (model.apply || model.yes) &&
+          (plan.actions.length || plan.reused.length)
+        ) {
+          if (!plan.actions.length) {
+            // Nothing will be written or recorded. Verify reuse without asking
+            // for approval of a mutation that does not exist.
+            await applyReady(plan);
+            progress.finish();
+            status = "reused";
+          } else if (model.json && !model.yes) {
             status = "declined";
             error = "JSON application requires --yes";
           } else if (model.yes || (await context.confirm("Apply these outputs and record undo history?"))) {
             receipt = await applyReady(plan);
-            status = receipt?.status ?? "noop";
+            progress.finish(
+              context.signal.aborted ? "cancelled" : receipt?.status === "partial" ? "failed" : "complete",
+            );
+            status = receipt?.status ?? (plan.reused.length ? "reused" : "noop");
           } else status = "declined";
+        }
+        const reports = [...plan.actions, ...plan.reused].filter((action) => action.kind === "review");
+        let opened: { path: string; success: boolean } | undefined;
+        if (
+          model.open &&
+          !model.dryRun &&
+          (model.apply || model.yes) &&
+          ["applied", "reused"].includes(status) &&
+          reports[0]
+        ) {
+          opened = {
+            path: reports[0].destination,
+            success: await openLocalFile(reports[0].destination, {
+              env: context.env,
+              signal: context.signal,
+            }),
+          };
+          if (!opened.success)
+            context.stderr.write(
+              "Could not open the review automatically; the report is available at the printed path.\n",
+            );
         }
         const result = {
           command: "ready",
@@ -117,11 +168,14 @@ export const ready = defineCommand(
           status,
           entries: plan.entries,
           actions: plan.actions,
+          reused: plan.reused,
+          ...(opened ? { opened } : {}),
           failures: plan.failures,
           checks: plan.checks,
           summary: {
             files,
             outputs: plan.actions.length,
+            reusedOutputs: plan.reused.length,
             appliedOutputs: receipt?.files.filter((file) => file.status === "applied").length ?? 0,
             unsupported,
             skipped,
@@ -132,15 +186,28 @@ export const ready = defineCommand(
         context.stdout.write(
           model.json
             ? json(result)
-            : `${status}: ${plan.actions.length} ${plural(plan.actions.length, "output")}${receipt ? `; recordId ${receipt.id}` : ""}${status === "noop" ? (plan.entries.length ? "; no applicable image outputs" : "; clean/no selected changes") : ""}\n`,
+            : status === "reused"
+              ? `Already prepared: ${new Set(plan.reused.map((item) => item.source)).size} ${plural(new Set(plan.reused.map((item) => item.source)).size, "image")} · ${plan.reused.length} verified ${plural(plan.reused.length, "output")} reused. No files written.\n`
+              : `${status}: ${plan.actions.length} ${plural(plan.actions.length, "output")}${receipt ? `; recordId ${receipt.id}` : ""}${status === "noop" ? (plan.entries.length ? "; no applicable image outputs" : "; clean/no selected changes") : ""}\n`,
         );
         if (!model.json) {
+          if (["applied", "reused"].includes(status)) {
+            for (const report of reports)
+              context.stdout.write(`Open review: ${pathToFileURL(report.destination).href}\n`);
+            if (opened)
+              context.stdout.write(
+                `${opened.success ? "Opened" : "Open manually"}: ${JSON.stringify(displayPath(context.cwd, opened.path))}${reports.length > 1 ? ` (first of ${reports.length} reports)` : ""}\n`,
+              );
+            if (status === "reused")
+              context.stdout.write(`Existing receipts: ${shellCommand([...program, "history"])}\n`);
+          }
           if (status === "blocked")
             context.stdout.write("No files written. Resolve the reported errors and run ready again.\n");
           else if (status === "planned") {
             const args = [...program, "ready", ...(model.paths.length ? model.paths : ["."])];
             if (model.changed) args.push("--changed");
-            if (model.review) args.push("--review");
+            if (model.review || model.open) args.push("--review");
+            if (model.open) args.push("--open");
             if (model.outDir !== undefined) args.push("--out-dir", model.outDir);
             if (model.width !== 1600) args.push("--width", String(model.width));
             if (model.quality !== undefined) args.push("--quality", String(model.quality));
@@ -162,6 +229,7 @@ export const ready = defineCommand(
         }
         return ["blocked", "declined", "partial"].includes(status) ? 1 : 0;
       } catch (error) {
+        progress.finish(context.signal.aborted ? "cancelled" : "failed");
         const message = error instanceof Error ? error.message : String(error);
         if (model.json)
           context.stdout.write(

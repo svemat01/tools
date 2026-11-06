@@ -19,9 +19,15 @@ export interface WatchEvent {
   readonly event: "check" | "error";
   readonly reason: "initial" | "change";
   readonly sequence: number;
-  readonly status: "planned" | "noop" | "blocked";
+  readonly status: "planned" | "reused" | "noop" | "blocked";
   readonly checks: { files: number; errors: number; warnings: number; infos: number; ok: boolean };
-  readonly summary: { files: number; outputs: number; unsupported: number; skipped: number };
+  readonly summary: {
+    files: number;
+    outputs: number;
+    reusedOutputs: number;
+    unsupported: number;
+    skipped: number;
+  };
   readonly failures: readonly string[];
   readonly issues: readonly {
     file: string;
@@ -34,7 +40,7 @@ export interface WatchEvent {
 const inside = (path: string, root: string) => path === root || path.startsWith(`${root}${sep}`);
 const detail = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const zeroChecks = () => ({ files: 0, errors: 0, warnings: 0, infos: 0, ok: false });
-const zeroSummary = () => ({ files: 0, outputs: 0, unsupported: 0, skipped: 0 });
+const zeroSummary = () => ({ files: 0, outputs: 0, reusedOutputs: 0, unsupported: 0, skipped: 0 });
 
 /** Include hidden project configs and Git selection without reading file contents or encoding images. */
 async function signature(targets: readonly string[], options: WatchOptions): Promise<string> {
@@ -158,7 +164,13 @@ export async function* watchReady(
       try {
         if (current.startsWith("signature-error:")) throw new Error(current.slice("signature-error:".length));
         const plan = await planReady(await inspectReady(targets, options));
-        const status = plan.failures.length ? "blocked" : plan.actions.length ? "planned" : "noop";
+        const status = plan.failures.length
+          ? "blocked"
+          : plan.actions.length
+            ? "planned"
+            : plan.reused.length
+              ? "reused"
+              : "noop";
         yield {
           command: "watch",
           schemaVersion: 1,
@@ -172,6 +184,7 @@ export async function* watchReady(
               (entry) => !["directory", "project", "blog", "generated", "deleted"].includes(entry.kind),
             ).length,
             outputs: plan.actions.length,
+            reusedOutputs: plan.reused.length,
             unsupported: plan.entries.filter((entry) => entry.status === "unsupported").length,
             skipped: plan.entries.filter((entry) => entry.status === "skipped").length,
           },

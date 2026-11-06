@@ -2,7 +2,7 @@
 
 A personal command-line toolkit for inspecting files, preparing images and blog posts, reviewing changes, and sharing local work.
 
-Preview a content batch with `ready`, choose image quality in an offline comparison, and undo explicitly recorded outputs. Everything runs locally; public sharing starts only when requested.
+Preview a content batch with `ready`, reuse verified outputs on repeat runs, choose image quality in an offline comparison, and undo explicitly recorded outputs. Everything runs locally; public sharing starts only when requested.
 
 ## Start here
 
@@ -22,7 +22,7 @@ Use `bun run sv ...` from the repository if you prefer not to link the executabl
 ```bash
 sv ready ./images                         # preview; no outputs written
 sv ready ./images --review --apply        # confirm, create images/reports, record undo history
-sv img tune photo.jpg                     # offline quality slider and downloadable variants
+sv img tune photo.jpg --open              # offline comparison; explicitly open the report
 sv paste --json                           # clipboard metadata; no raw text/token output
 sv share ./site --dry-run                 # inspect exactly which files would be served
 ```

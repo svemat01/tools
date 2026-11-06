@@ -32,8 +32,8 @@ Without `--once`, the command stays alive until Ctrl+C or another cancellation s
 
 - `command: "watch"`, `schemaVersion: 1`, and a sequence number.
 - `event: "check"` for completed checking or `"error"` for an inspection failure.
-- `reason: "initial" | "change"` and `status: "planned" | "noop" | "blocked"`.
-- Validation counts in `checks`, selection/output counts in `summary`, plus `failures` and `issues`.
+- `reason: "initial" | "change"` and `status: "planned" | "reused" | "noop" | "blocked"`.
+- Validation counts in `checks`, selection/new-output/`reusedOutputs` counts in `summary`, plus `failures` and `issues`.
 
 The process remains running in continuous mode. Consume events as lines arrive rather than waiting for stdout to close. Use `--once --json` when you want a single event and an exit code. Startup messages and diagnostics stay on stderr.
 
@@ -44,3 +44,5 @@ sv ready ./images --review --apply
 ```
 
 Watch does not accept an apply mode, run shell commands, start a server, call a model, or publish content.
+
+Checks reuse verified recorded outputs under the same rules as [ready](ready.md#repeat-preparation-without-duplicate-outputs). Output verification occurs when a check runs; the watcher still triggers on selected inputs/configuration, not every change to generated outputs or history. Start a fresh one-shot check to revalidate those dependencies immediately. Interactive checking shows transient progress on stderr; NDJSON omits it.

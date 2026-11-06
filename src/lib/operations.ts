@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
 
 import { writeFileAtomic } from "./fs.ts";
+import type { ProgressEvent } from "./progress.ts";
 
 export const contentHash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 export interface FileInput {
@@ -17,6 +18,8 @@ interface FileOutput {
   readonly path: string;
   readonly bytes: Uint8Array;
   readonly inputs?: readonly FileInput[];
+  /** Opaque versioned transformation identity; absent on older receipts. */
+  readonly recipeHash?: string;
 }
 export type FileOperation = FileOutput &
   ({ readonly kind: "create" } | { readonly kind: "replace"; readonly expected: Uint8Array | string });
@@ -27,12 +30,14 @@ export interface OperationOptions {
   /** Exact sv state root; intended for embedders/tests. */
   readonly stateRoot?: string;
   readonly signal?: AbortSignal;
+  readonly onProgress?: (event: ProgressEvent) => void;
 }
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const fileSchema = z.object({
   kind: z.enum(["create", "replace"]),
   path: z.string(),
   afterHash: hash,
+  recipeHash: hash.optional(),
   beforeHash: hash.optional(),
   mode: z.number().int().optional(),
   backup: z
@@ -196,6 +201,7 @@ export async function executeFilePlan(
       afterHash: contentHash(op.bytes),
       inputs,
       status: "pending",
+      ...(op.recipeHash === undefined ? {} : { recipeHash: hash.parse(op.recipeHash) }),
     };
     if (op.kind === "replace") {
       const before = await regularBytes(path);
@@ -245,6 +251,7 @@ export async function executeFilePlan(
         options.signal?.throwIfAborted();
         await checkInputs(file.inputs);
         file.status = "applying";
+        options.onProgress?.({ phase: "apply", path: file.path, current: index + 1, total: files.length });
         await save(directory, receipt);
         await writeFileAtomic(
           file.path,
@@ -267,7 +274,18 @@ export async function executeFilePlan(
 }
 
 /** Read-only: absence never creates state directories. Invalid receipts fail closed. */
-export async function readHistory(options: OperationOptions): Promise<OperationReceipt[]> {
+export async function readHistory(
+  options: OperationOptions,
+  limits?: { readonly limit: number; readonly maxBytes: number },
+): Promise<OperationReceipt[]> {
+  if (
+    limits &&
+    (!Number.isSafeInteger(limits.limit) ||
+      limits.limit < 1 ||
+      !Number.isSafeInteger(limits.maxBytes) ||
+      limits.maxBytes < 1)
+  )
+    throw new RangeError("History read limits must be positive safe integers");
   const loc = await location(options);
   let entries: string[];
   try {
@@ -277,10 +295,43 @@ export async function readHistory(options: OperationOptions): Promise<OperationR
     throw error;
   }
   const receipts: OperationReceipt[] = [];
-  for (const id of entries.filter((entry) => z.string().uuid().safeParse(entry).success)) {
-    const receipt = receiptSchema.parse(
-      JSON.parse(await readFile(join(loc.directory, id, "receipt.json"), "utf8")),
+  let ids = entries.filter((entry) => z.string().uuid().safeParse(entry).success);
+  if (limits) {
+    const recent = await Promise.all(
+      ids.map(async (id) => ({
+        id,
+        time: (await lstat(join(loc.directory, id, "receipt.json"))).mtimeMs,
+      })),
     );
+    ids = recent
+      .sort((a, b) => b.time - a.time || b.id.localeCompare(a.id))
+      .slice(0, limits.limit)
+      .map((item) => item.id);
+  }
+  let remaining = limits?.maxBytes ?? Infinity;
+  for (const id of ids) {
+    const path = join(loc.directory, id, "receipt.json");
+    let data: Buffer;
+    if (limits) {
+      const file = await open(path, "r");
+      try {
+        const size = (await file.stat()).size;
+        if (size > remaining) break;
+        const buffer = Buffer.alloc(Math.min(size + 1, remaining + 1));
+        let length = 0;
+        while (length < buffer.length) {
+          const { bytesRead } = await file.read(buffer, length, buffer.length - length, null);
+          if (!bytesRead) break;
+          length += bytesRead;
+        }
+        if (length > size || length > remaining) throw new Error(`History changed while reading: ${path}`);
+        remaining -= length;
+        data = buffer.subarray(0, length);
+      } finally {
+        await file.close();
+      }
+    } else data = await readFile(path);
+    const receipt = receiptSchema.parse(JSON.parse(data.toString("utf8")));
     if (
       receipt.id !== id ||
       receipt.project !== loc.project ||

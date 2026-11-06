@@ -7,6 +7,7 @@ import type { AppContext } from "../context.ts";
 import { complete, defineCommand, files } from "../kit/index.ts";
 import { displayPath } from "../lib/fs.ts";
 import { plural, shellCommand } from "../lib/output.ts";
+import { createProgressReporter } from "../lib/progress.ts";
 import { watchReady } from "../lib/watch.ts";
 
 export const watch = defineCommand(
@@ -32,6 +33,7 @@ export const watch = defineCommand(
   {
     async run({ model }, context: AppContext) {
       let failed = false;
+      const progress = createProgressReporter(context.stderr, { cwd: context.cwd, enabled: !model.json });
       if (!model.once)
         context.stderr.write(
           `Watching ${model.paths.length ? model.paths.map((path) => JSON.stringify(path)).join(", ") : "."}; read-only previews every ${model.interval}ms when inputs change. Stop with Ctrl+C.\n`,
@@ -44,12 +46,14 @@ export const watch = defineCommand(
           changed: model.changed,
           intervalMs: model.interval,
           once: model.once,
+          onProgress: progress.report,
         })) {
+          progress.finish();
           failed = event.status === "blocked";
           if (model.json) context.stdout.write(`${JSON.stringify(event)}\n`);
           else {
             context.stdout.write(
-              `${event.reason === "initial" ? "Initial check" : "Changed inputs"}: ${event.status} · ${event.summary.files} ${plural(event.summary.files, "file")} · ${event.summary.outputs} planned ${plural(event.summary.outputs, "output")} · ${event.checks.errors} ${plural(event.checks.errors, "error")} · ${event.checks.warnings} ${plural(event.checks.warnings, "warning")}\n`,
+              `${event.reason === "initial" ? "Initial check" : "Changed inputs"}: ${event.status} · ${event.summary.files} ${plural(event.summary.files, "file")} · ${event.summary.outputs} planned ${plural(event.summary.outputs, "output")} · ${event.summary.reusedOutputs} reused outputs · ${event.checks.errors} ${plural(event.checks.errors, "error")} · ${event.checks.warnings} ${plural(event.checks.warnings, "warning")}\n`,
             );
             for (const failure of event.failures) context.stdout.write(`  ${failure}\n`);
             for (const issue of event.issues.filter((issue) => issue.severity !== "error"))
@@ -68,9 +72,11 @@ export const watch = defineCommand(
           }
         }
       } catch (error) {
+        progress.finish(context.signal.aborted ? "cancelled" : "failed");
         if (context.signal.aborted && !model.once) return 0;
         throw error;
       }
+      progress.finish(context.signal.aborted ? "cancelled" : "complete");
       return model.once && (failed || context.signal.aborted) ? 1 : 0;
     },
   },

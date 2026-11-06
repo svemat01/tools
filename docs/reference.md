@@ -63,6 +63,8 @@ Options:
   --yes, --no-yes          Authorize application without prompting
   --dry-run, --no-dry-run  Preview only, even with --apply or --yes
   --review, --no-review    Plan an offline HTML review for each applied image
+  --open, --no-open        Open the first report after applying or verifying
+                           reuse; implies --review
   --out-dir <VALUE>        Output directory (default .sv-ready); excluded from
                            discovery
   --width <VALUE>          Maximum image width in pixels; never upscales
@@ -291,6 +293,7 @@ Options:
                        60,75,85)
   --format <VALUE>
   --out <VALUE>        Report path; existing names receive a safe numeric suffix
+  --open, --no-open    Open the saved report with your local default application
   --json, --no-json    Print report path and variant metadata as JSON
   -h, --help           Print help
 ```

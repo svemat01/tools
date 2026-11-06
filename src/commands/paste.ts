@@ -7,7 +7,7 @@ import type { AppContext } from "../context.ts";
 import { complete, defineCommand, files } from "../kit/index.ts";
 import { readClipboard } from "../lib/clipboard.ts";
 import { writeFileAtomic } from "../lib/fs.ts";
-import { json } from "../lib/output.ts";
+import { json, shellCommand } from "../lib/output.ts";
 import { summarizeClipboard } from "../lib/paste.ts";
 
 export const paste = defineCommand(
@@ -50,16 +50,28 @@ export const paste = defineCommand(
           status = "saved";
         } else status = "declined";
       }
+      const program = [
+        context.program,
+        ...(resolve(context.cwd) === process.cwd() ? [] : ["--cwd", context.cwd]),
+      ];
+      const command = (...argv: string[]) => shellCommand([...program, ...argv]);
       const suggestions =
-        summary.kind === "image"
-          ? status === "saved"
-            ? ["sv inspect <saved-path>", "sv img tune <saved-path>"]
-            : ["sv paste --out clipboard.png --yes", "sv inspect <saved-path>", "sv img tune <saved-path>"]
-          : summary.kind === "paths"
-            ? ["sv inspect <path>"]
-            : summary.kind === "jwt"
-              ? ["sv jwt decode --help", "sv jwt verify --help"]
-              : ["sv paste --out clipboard.txt --yes", "sv inspect <saved-path>"];
+        status === "saved" && destination !== undefined
+          ? [
+              command("inspect", destination),
+              ...(summary.kind === "image"
+                ? [command("img", "tune", destination)]
+                : summary.kind === "jwt"
+                  ? [command("jwt", "decode", "--file", destination)]
+                  : []),
+            ]
+          : summary.kind === "image"
+            ? [command("paste", "--out", "clipboard.png", "--yes")]
+            : summary.kind === "paths"
+              ? [command("inspect", "--help")]
+              : summary.kind === "jwt"
+                ? [command("jwt", "decode", "--help"), command("jwt", "verify", "--help")]
+                : [command("paste", "--out", "clipboard.txt", "--yes")];
       const result = {
         command: "paste",
         ...summary,
