@@ -33,15 +33,15 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
 
 ## Commands
 
-| Group      | Commands                                 | Purpose                                                        |
-| ---------- | ---------------------------------------- | -------------------------------------------------------------- |
-| `img`      | `web`, `og`, `resize`, `compare`, `info` | WebP conversion, cover optimization, resizing, diffs, metadata |
-| `blog`     | `check`, `prepare`                       | Validate and safely prepare Markdown/MDX posts                 |
-| `video`    | `webm`                                   | Convert video to WebM/VP9                                      |
-| `gremlins` | —                                        | Find and fix invisible or suspicious Unicode                   |
-| `tunnel`   | —                                        | Expose a local port through a Cloudflare Quick Tunnel          |
-| `jwt`      | `decode`, `sign`, `verify`               | Inspect and work with JSON Web Tokens                          |
-| `dev`      | `echo`                                   | Small development helpers                                      |
+| Group      | Commands                                         | Purpose                                                        |
+| ---------- | ------------------------------------------------ | -------------------------------------------------------------- |
+| `img`      | `web`, `og`, `resize`, `compare`, `info`, `tune` | WebP conversion, cover optimization, resizing, diffs, metadata |
+| `blog`     | `check`, `prepare`                               | Validate and safely prepare Markdown/MDX posts                 |
+| `video`    | `webm`                                           | Convert video to WebM/VP9                                      |
+| `gremlins` | —                                                | Find and fix invisible or suspicious Unicode                   |
+| `tunnel`   | —                                                | Expose a local port through a Cloudflare Quick Tunnel          |
+| `jwt`      | `decode`, `sign`, `verify`                       | Inspect and work with JSON Web Tokens                          |
+| `dev`      | `echo`                                           | Small development helpers                                      |
 
 Every command has `--help` with its options, `--json` where structured output helps, and predictable exit codes: `0` success, `1` runtime failure, `2` usage error. Destructive actions are opt-in and previewed first.
 
@@ -67,6 +67,10 @@ sv img info cover.png hero.jpg
 Existing outputs are never replaced unless you pass `--force`; otherwise the tool picks `name-1.webp`, `name-2.webp`, and so on. Batch destinations are reserved during planning, so dry runs handle colliding filenames consistently. If an output appears after planning, writing fails instead of replacing it. `--dry-run` performs the transform to report sizes but writes no files. Originals are preserved by default; `--force` can replace an original when it is also the output path.
 
 `img web` preserves existing target-format bytes when resizing is unnecessary. Pass `--reencode` or an explicit `--quality` to recompress them. `--force` controls replacement, independently of recompression. `img og` preserves PNG pixel values by default; `--palette` explicitly enables palette quantization.
+
+`sv img tune hero.jpg --width 1600 --qualities 60,75,85 --format webp --out review.html` exports one self-contained offline HTML review. Select quality, drag the comparison divider, zoom to output pixels and scroll to pan both images together. Download the selected encoded image from the report. `--json` prints the report path and variant metadata; no browser opens and no separate variant files are written. Existing report names receive a numeric suffix, including explicit `--out`; there is no overwrite option.
+
+Tune defaults to WebP, width 1600 and qualities 60,75,85, never upscales, applies orientation, and strips metadata. The original reference is a lossless PNG at the output dimensions; byte savings compare each encoding with the source file. Only the filename and relevant dimensions/settings are included. V1 accepts static raster images supported by Sharp, rejects SVG and animation/multiple pages, and caps inputs at 12 MiB/24 megapixels, width at 2560, distinct qualities at five, and total embedded image bytes at 20 MiB (roughly 27 MiB HTML). Reduce width or variant count if the report budget is exceeded. AVIF is optional and slower. Source files are preserved.
 
 ### Blog
 
