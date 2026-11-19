@@ -2,6 +2,8 @@
  * End-to-end: spawn the real `sv` entry point as a separate process.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import pkg from "../package.json" with { type: "json" };
@@ -31,7 +33,7 @@ describe("sv", () => {
     const result = await sv([]);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain(`sv ${pkg.version}`);
-    for (const group of ["img", "blog", "video", "gremlins", "tunnel", "jwt", "dev"]) {
+    for (const group of ["img", "blog", "video", "gremlins", "tunnel", "port-forward", "jwt", "dev"]) {
       expect(result.stdout).toContain(group);
     }
   });
@@ -104,6 +106,47 @@ describe("sv", () => {
       stdout: "A B\nA B\n",
       stderr: "",
     });
+  });
+
+  test("SSH forwarding picks a free port and honors an explicit local port", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sv-ssh-"));
+    const fixture = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("fixture"),
+    });
+    const target = fixture.port!;
+    try {
+      await writeFile(join(directory, "ssh"), '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+      const env = { PATH: directory };
+      const automatic = await sv(["port-forward", "jab-carbon", String(target)], { env });
+      expect(automatic.code).toBe(0);
+      const selected = Number(/Opening SSH forward on 127\.0\.0\.1:(\d+)/.exec(automatic.stdout)?.[1]);
+      expect(selected).toBeGreaterThan(target);
+      expect(automatic.stdout).toContain(`-L\n127.0.0.1:${selected}:localhost:${target}\n--\njab-carbon\n`);
+      expect(automatic.stdout).toContain("ExitOnForwardFailure=yes");
+
+      const occupied = await sv(["pf", "dev@example.com", "3000", String(target)], { env });
+      expect(occupied.code).toBe(1);
+      expect(occupied.stderr).toContain(`Local port ${target} is already in use`);
+      expect(occupied.stdout).toBe("");
+
+      const explicit = await sv(["pf", "dev@example.com", "3000", String(selected)], { env });
+      expect(explicit.code).toBe(0);
+      expect(explicit.stdout).toContain(`-L\n127.0.0.1:${selected}:localhost:3000\n--\ndev@example.com\n`);
+    } finally {
+      await fixture.stop(true);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("SSH forwarding rejects invalid ports before starting SSH", async () => {
+    for (const args of [
+      ["jab-carbon", "0"],
+      ["jab-carbon", "3000", "65536"],
+    ]) {
+      expect((await sv(["pf", ...args], { env: { PATH: "/nonexistent" } })).code).toBe(2);
+    }
   });
 
   test("usage errors exit with 2 and explain themselves", async () => {

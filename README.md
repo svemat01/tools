@@ -33,15 +33,16 @@ The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To tr
 
 ## Commands
 
-| Group      | Commands                                 | Purpose                                                        |
-| ---------- | ---------------------------------------- | -------------------------------------------------------------- |
-| `img`      | `web`, `og`, `resize`, `compare`, `info` | WebP conversion, cover optimization, resizing, diffs, metadata |
-| `blog`     | `check`, `prepare`                       | Validate and safely prepare Markdown/MDX posts                 |
-| `video`    | `webm`                                   | Convert video to WebM/VP9                                      |
-| `gremlins` | —                                        | Find and fix invisible or suspicious Unicode                   |
-| `tunnel`   | —                                        | Expose a local port through a Cloudflare Quick Tunnel          |
-| `jwt`      | `decode`, `sign`, `verify`               | Inspect and work with JSON Web Tokens                          |
-| `dev`      | `echo`                                   | Small development helpers                                      |
+| Group          | Commands                                 | Purpose                                                        |
+| -------------- | ---------------------------------------- | -------------------------------------------------------------- |
+| `img`          | `web`, `og`, `resize`, `compare`, `info` | WebP conversion, cover optimization, resizing, diffs, metadata |
+| `blog`         | `check`, `prepare`                       | Validate and safely prepare Markdown/MDX posts                 |
+| `video`        | `webm`                                   | Convert video to WebM/VP9                                      |
+| `gremlins`     | —                                        | Find and fix invisible or suspicious Unicode                   |
+| `tunnel`       | —                                        | Expose a local port through a Cloudflare Quick Tunnel          |
+| `port-forward` | `pf` (shorthand)                         | Reach a remote TCP port on your computer over SSH              |
+| `jwt`          | `decode`, `sign`, `verify`               | Inspect and work with JSON Web Tokens                          |
+| `dev`          | `echo`                                   | Small development helpers                                      |
 
 Every command has `--help` with its options, `--json` where structured output helps, and predictable exit codes: `0` success, `1` runtime failure, `2` usage error. Destructive actions are opt-in and previewed first.
 
@@ -119,6 +120,15 @@ sv tunnel 8080 --host 127.0.0.1 --copy
 ```
 
 `tunnel` prints an exposure warning, starts a Cloudflare Quick Tunnel with `cloudflared`, prints the public URL, and cleans up the child process on Ctrl+C. It does not require a Cloudflare account. Quick Tunnel URLs are temporary and public; do not expose sensitive services. `--json` emits the URL as soon as the tunnel is ready and keeps running until stopped.
+
+### SSH port forwarding
+
+```bash
+sv port-forward jab-carbon 3000
+sv pf user@example.com 3000 8080
+```
+
+`port-forward` uses OpenSSH and accepts a host or an alias from your SSH config. It forwards to `localhost` on that host and prints the local address to open. With no local port specified, it starts at the target port and increments past ports already in use. An explicit local port must be available. The local listener binds to `127.0.0.1`. Press Ctrl+C to close the forward.
 
 ### Video
 
