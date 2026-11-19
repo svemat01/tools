@@ -1,4 +1,3 @@
-import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { argument, cli, command, description, name, schema, toggle } from "@bomb.sh/router";
@@ -7,7 +6,7 @@ import { z } from "zod";
 import type { AppContext } from "../context.ts";
 import { defineCommand } from "../kit/index.ts";
 import { displayPath } from "../lib/fs.ts";
-import { contentHash, undoOperation } from "../lib/operations.ts";
+import { undoOperation } from "../lib/operations.ts";
 import { json, plural, shellCommand } from "../lib/output.ts";
 
 export const undo = defineCommand(
@@ -25,20 +24,7 @@ export const undo = defineCommand(
       const preview = await undoOperation(model.id, { ...context, dryRun: true });
       const changes: { action: "delete" | "restore"; path: string }[] = [];
       for (const file of preview.files) {
-        if (file.status !== "applied" && file.status !== "applying") continue;
-        if (file.status === "applying") {
-          // The journal is saved before publication. A failed create may have
-          // no output, and a failed replacement may still contain its original.
-          if (file.kind === "create") {
-            try {
-              await lstat(file.path);
-            } catch (error) {
-              if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
-              throw error;
-            }
-          }
-          if (file.kind === "replace" && contentHash(await readFile(file.path)) === file.beforeHash) continue;
-        }
+        if (file.status !== "applied") continue;
         changes.push({ action: file.kind === "create" ? "delete" : "restore", path: file.path });
       }
       if (!model.json) {
@@ -56,7 +42,7 @@ export const undo = defineCommand(
         // entirely read-only; JSON cannot apply even this bookkeeping without --yes.
         const receipt =
           !model.dryRun && changes.length === 0 && preview.status !== "undone" && (model.yes || !model.json)
-            ? await undoOperation(preview.id, context)
+            ? await undoOperation(preview.id, { ...context, expectedReceipt: preview })
             : preview;
         if (model.json) context.stdout.write(json({ dryRun: model.dryRun, changes, receipt }));
         else
@@ -69,7 +55,7 @@ export const undo = defineCommand(
       }
       if (!model.yes && (model.json || !(await context.confirm("Apply this undo?"))))
         throw new Error("Use --yes to apply undo without interactive confirmation");
-      const receipt = await undoOperation(preview.id, context);
+      const receipt = await undoOperation(preview.id, { ...context, expectedReceipt: preview });
       if (model.json) context.stdout.write(json({ dryRun: false, changes, receipt }));
       else context.stdout.write(`${receipt.id}: ${receipt.status}\n`);
       return receipt.status === "undone" ? 0 : 1;

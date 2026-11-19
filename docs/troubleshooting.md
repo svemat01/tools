@@ -57,7 +57,7 @@ Replace `OPERATION_ID` with the id printed when outputs were applied. `last` sel
 
 If an output or source changed, undo refuses the whole preflight. Inspect the receipt and the files rather than adding a force flag: undo has no force mode. A corrupt replacement backup also blocks undo.
 
-`partial` means a runtime failure or cancellation stopped a multi-file operation. The receipt preserves progress; inspect per-file states before deciding how to recover. An `applying` file may have been published before a crash, and undo checks its current bytes. An `undoing` file needs manual inspection because restoration may have been interrupted. Restoring some files does not make a batch a transaction.
+`partial` means a runtime failure or cancellation stopped a multi-file operation. Inspect the receipt for per-file progress. For an `applying` file, undo can skip a missing new output or a replacement that still contains its original bytes. Other `applying` files need manual inspection because matching bytes alone cannot establish who published the file. An `undoing` file also needs manual inspection because restoration may have been interrupted.
 
 A stale writer lock fails closed. The error prints the lock path. Confirm no operation is still running before manually removing that exact lock. Do not delete receipt or backup directories as a way to force undo. There is no automatic backup-retention cleanup yet.
 

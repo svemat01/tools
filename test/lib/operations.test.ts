@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -88,6 +89,42 @@ test("entire plan conflicts refuse before writing content or state", async () =>
   expect(await stat(opts.stateRoot).catch(() => null)).toBeNull();
 });
 
+test("receipt directories left before journaling do not hide recorded operations", async () => {
+  const opts = await setup();
+  const receipt = await executeFilePlan([{ kind: "create", path: "result", bytes: bytes("new") }], opts);
+  const [partition] = await readdir(opts.stateRoot);
+  const interrupted = join(opts.stateRoot, partition!, randomUUID());
+  await mkdir(interrupted);
+  await writeFile(join(interrupted, "0.bak"), "backup staged before receipt");
+
+  expect((await readHistory(opts)).map((item) => item.id)).toEqual([receipt.id]);
+  expect((await readHistory(opts, { limit: 1, maxBytes: 4096 })).map((item) => item.id)).toEqual([
+    receipt.id,
+  ]);
+  expect((await undoOperation("last", opts)).status).toBe("undone");
+});
+
+test("undo refuses a receipt that advanced since preview", async () => {
+  const opts = await setup();
+  const output = join(opts.cwd, "result");
+  const applied = await executeFilePlan([{ kind: "create", path: output, bytes: bytes("new") }], opts);
+  const [partition] = await readdir(opts.stateRoot);
+  const receiptPath = join(opts.stateRoot, partition!, applied.id, "receipt.json");
+  const preparing = {
+    ...applied,
+    status: "prepared",
+    files: [{ ...applied.files[0], status: "pending" }],
+  };
+  await writeFile(receiptPath, JSON.stringify(preparing));
+  const preview = await undoOperation(applied.id, { ...opts, dryRun: true });
+  await writeFile(receiptPath, JSON.stringify(applied));
+
+  await expect(undoOperation(applied.id, { ...opts, expectedReceipt: preview })).rejects.toThrow(
+    "Operation changed since the undo preview",
+  );
+  expect(await readFile(output, "utf8")).toBe("new");
+});
+
 test("undo preflights all outputs, inputs and backup integrity", async () => {
   const opts = await setup();
   await writeFile(join(opts.cwd, "old"), "old");
@@ -163,27 +200,28 @@ test("symlinks and aborted requests fail closed", async () => {
   expect(await readFile(join(opts.cwd, "original"), "utf8")).toBe("old");
 });
 
-test("publication failure records applied prefix without clobbering the racing file", async () => {
+test.each([
+  ["unrelated", "Output changed"],
+  ["b", "Unconfirmed publication"],
+])("publication failure preserves a racing file containing %s during undo", async (racingBytes, error) => {
   const opts = await setup();
-  const signal = new AbortController().signal;
-  let checks = 0;
-  const spy = spyOn(signal, "throwIfAborted").mockImplementation(() => {
-    if (++checks === 5) writeFileSync(join(opts.cwd, "b"), "unrelated");
-  });
-  try {
-    const receipt = await executeFilePlan(
-      [
-        { kind: "create", path: "a", bytes: bytes("a") },
-        { kind: "create", path: "b", bytes: bytes("b") },
-      ],
-      { ...opts, signal },
-    );
-    expect(receipt.status).toBe("partial");
-    expect(receipt.files[0]!.status).toBe("applied");
-    expect(await readFile(join(opts.cwd, "b"), "utf8")).toBe("unrelated");
-    await expect(undoOperation(receipt.id, opts)).rejects.toThrow("Output changed");
-    expect(await Bun.file(join(opts.cwd, "a")).exists()).toBe(true);
-  } finally {
-    spy.mockRestore();
-  }
+  const racingFile = join(opts.cwd, "b");
+  const receipt = await executeFilePlan(
+    [
+      { kind: "create", path: "a", bytes: bytes("a") },
+      { kind: "create", path: "b", bytes: bytes("b") },
+    ],
+    {
+      ...opts,
+      onProgress(event) {
+        if (event.path === racingFile) writeFileSync(racingFile, racingBytes, { flag: "wx" });
+      },
+    },
+  );
+  expect(receipt.status).toBe("partial");
+  expect(receipt.files[0]!.status).toBe("applied");
+  expect(receipt.files[1]!.status).toBe("applying");
+  await expect(undoOperation(receipt.id, opts)).rejects.toThrow(error);
+  expect(await readFile(racingFile, "utf8")).toBe(racingBytes);
+  expect(await Bun.file(join(opts.cwd, "a")).exists()).toBe(true);
 });

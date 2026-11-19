@@ -300,10 +300,11 @@ export async function readHistory(
     const recent = await Promise.all(
       ids.map(async (id) => ({
         id,
-        time: (await lstat(join(loc.directory, id, "receipt.json"))).mtimeMs,
+        stat: await info(join(loc.directory, id, "receipt.json")),
       })),
     );
     ids = recent
+      .flatMap(({ id, stat }) => (stat ? [{ id, time: stat.mtimeMs }] : []))
       .sort((a, b) => b.time - a.time || b.id.localeCompare(a.id))
       .slice(0, limits.limit)
       .map((item) => item.id);
@@ -311,10 +312,16 @@ export async function readHistory(
   let remaining = limits?.maxBytes ?? Infinity;
   for (const id of ids) {
     const path = join(loc.directory, id, "receipt.json");
+    // Outputs are never published before the first durable receipt. A missing
+    // receipt can be left by an interrupted preparation or an active writer.
+    const file = await open(path, "r").catch((error: unknown) => {
+      if (missing(error)) return undefined;
+      throw error;
+    });
+    if (!file) continue;
     let data: Buffer;
-    if (limits) {
-      const file = await open(path, "r");
-      try {
+    try {
+      if (limits) {
         const size = (await file.stat()).size;
         if (size > remaining) break;
         const buffer = Buffer.alloc(Math.min(size + 1, remaining + 1));
@@ -327,10 +334,10 @@ export async function readHistory(
         if (length > size || length > remaining) throw new Error(`History changed while reading: ${path}`);
         remaining -= length;
         data = buffer.subarray(0, length);
-      } finally {
-        await file.close();
-      }
-    } else data = await readFile(path);
+      } else data = await file.readFile();
+    } finally {
+      await file.close();
+    }
     const receipt = receiptSchema.parse(JSON.parse(data.toString("utf8")));
     if (
       receipt.id !== id ||
@@ -358,9 +365,13 @@ async function undoFiles(receipt: OperationReceipt, directory: string) {
     if (file.status === "undoing") throw new Error(`Interrupted undo requires inspection: ${file.path}`);
     if (file.status === "applying" && file.kind === "create" && !(await info(file.path))) continue;
     const current = await regularBytes(file.path);
-    if (file.status === "applying" && file.kind === "replace" && contentHash(current) === file.beforeHash)
-      continue;
-    if (contentHash(current) !== file.afterHash) throw new Error(`Output changed: ${file.path}`);
+    const currentHash = contentHash(current);
+    if (file.status === "applying" && file.kind === "replace" && currentHash === file.beforeHash) continue;
+    if (currentHash !== file.afterHash) throw new Error(`Output changed: ${file.path}`);
+    // Matching bytes cannot distinguish a successful publication from another
+    // writer winning the race while this operation still had a journaled intent.
+    if (file.status === "applying")
+      throw new Error(`Unconfirmed publication requires inspection: ${file.path}`);
     await checkInputs(file.inputs.filter((input) => input.path !== file.path));
     if (file.kind === "replace") {
       if (!file.backup || file.mode === undefined || !file.beforeHash)
@@ -374,12 +385,14 @@ async function undoFiles(receipt: OperationReceipt, directory: string) {
 }
 export async function undoOperation(
   id: string,
-  options: OperationOptions & { readonly dryRun?: boolean },
+  options: OperationOptions & { readonly dryRun?: boolean; readonly expectedReceipt?: OperationReceipt },
 ): Promise<OperationReceipt> {
   options.signal?.throwIfAborted();
   const loc = await location(options);
   const perform = async (apply: boolean) => {
     const receipt = await getReceipt(id, options);
+    if (options.expectedReceipt && JSON.stringify(receipt) !== JSON.stringify(options.expectedReceipt))
+      throw new Error(`Operation changed since the undo preview: ${receipt.id}; preview it again`);
     const directory = join(loc.directory, receipt.id);
     const changes = await undoFiles(receipt, directory);
     if (!apply || receipt.status === "undone") return receipt;
