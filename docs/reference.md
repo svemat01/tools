@@ -16,27 +16,30 @@ Usage:
   sv [OPTIONS] [COMMAND]
 
 Commands:
-  ready     Preview local content preparation; apply new image outputs with undo
-            history
-  watch     Watch local content for read-only ready checks; never applies
-            changes
-  inspect   Inspect a local file or bounded directory sample without writing
-  img       Image conversion, resizing, comparison and inspection
-  blog      Check and prepare Markdown/MDX blog posts using a configurable
-            layout
-  video     Video conversion utilities
-  share     Start a deliberate local sharing session; --public opts into a Quick
-            Tunnel
-  paste     Summarize clipboard content privately; explicitly save with --out
-  history   List local file operation receipts or inspect one
-  undo      Cautiously undo a recorded file operation
-  doctor    Check runtime, optional tools and project configuration
-  init      Preview and create a minimal sv.config.json without overwriting
-  gremlins  Find suspicious or invisible Unicode characters in files and
-            directories
-  tunnel    Expose a local HTTP port through a Cloudflare Quick Tunnel
-  jwt       Decode, sign and verify JSON Web Tokens
-  dev       Development utilities
+  ready         Preview local content preparation; apply new image outputs with
+                undo history
+  watch         Watch local content for read-only ready checks; never applies
+                changes
+  inspect       Inspect a local file or bounded directory sample without writing
+  img           Image conversion, resizing, comparison and inspection
+  blog          Check and prepare Markdown/MDX blog posts using a configurable
+                layout
+  video         Video conversion utilities
+  share         Start a deliberate local sharing session; --public opts into a
+                Quick Tunnel
+  paste         Summarize clipboard content privately; explicitly save with
+                --out
+  history       List local file operation receipts or inspect one
+  undo          Cautiously undo a recorded file operation
+  doctor        Check runtime, optional tools and project configuration
+  init          Preview and create a minimal sv.config.json without overwriting
+  gremlins      Find suspicious or invisible Unicode characters in files and
+                directories
+  tunnel        Expose a local HTTP port through a Cloudflare Quick Tunnel
+  port-forward  Forward a remote TCP port over SSH
+  pf            Shorthand for port-forward
+  jwt           Decode, sign and verify JSON Web Tokens
+  dev           Development utilities
 
 Options:
   --verbose, --no-verbose  Print debug output to stderr
@@ -562,6 +565,44 @@ Options:
   --copy, --no-copy  Copy the public URL to the clipboard when it is ready
   --json, --no-json  Print machine-readable JSON when the tunnel starts
   -h, --help         Print help
+```
+
+## sv port-forward
+
+```text
+port-forward
+Forward a remote TCP port over SSH
+
+Usage:
+  port-forward [OPTIONS] <DESTINATION> <TARGET-PORT> <LOCAL-PORT>
+
+Arguments:
+  <DESTINATION>  SSH host, alias, or user@host
+  <TARGET-PORT>  TCP port on the SSH host
+  <LOCAL-PORT>   Optional exact local port (defaults to the first free port at
+                 or above the target port)
+
+Options:
+  -h, --help  Print help
+```
+
+## sv pf
+
+```text
+pf
+Shorthand for port-forward
+
+Usage:
+  pf [OPTIONS] <DESTINATION> <TARGET-PORT> <LOCAL-PORT>
+
+Arguments:
+  <DESTINATION>  SSH host, alias, or user@host
+  <TARGET-PORT>  TCP port on the SSH host
+  <LOCAL-PORT>   Optional exact local port (defaults to the first free port at
+                 or above the target port)
+
+Options:
+  -h, --help  Print help
 ```
 
 ## sv jwt

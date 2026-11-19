@@ -17,6 +17,7 @@ import { init } from "./commands/init.ts";
 import { inspect } from "./commands/inspect.ts";
 import { jwt } from "./commands/jwt/index.ts";
 import { paste } from "./commands/paste.ts";
+import { pf, portForward } from "./commands/port-forward.ts";
 import { ready } from "./commands/ready.ts";
 import { share } from "./commands/share.ts";
 import { tunnel } from "./commands/tunnel.ts";
@@ -47,6 +48,8 @@ export const sv = defineCommand(
     init,
     gremlins,
     tunnel,
+    portForward,
+    pf,
     jwt,
     dev,
   ),

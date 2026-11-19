@@ -42,6 +42,7 @@ Replace example paths with your own. `ready` currently applies static image outp
 | `history`, `undo`                                    | Inspect or reverse recorded file operations                                          | [History](docs/history.md)                                   |
 | `paste`                                              | Privately summarize or explicitly save clipboard input                               | [Clipboard](docs/clipboard.md)                               |
 | `share`, `tunnel`                                    | Serve local files/services and optionally start a public Quick Tunnel                | [Sharing](docs/sharing.md)                                   |
+| `port-forward`, `pf`                                 | Reach a remote TCP port over SSH                                                     | [SSH port forwarding](docs/sharing.md#ssh-port-forwarding)   |
 | `video webm`                                         | Convert a recording with FFmpeg                                                      | [Workflows](docs/workflows.md#convert-a-recording)           |
 | `gremlins`                                           | Find suspicious Unicode and preview replacements                                     | [Workflows](docs/workflows.md#find-suspicious-unicode)       |
 | `jwt decode`, `sign`, `verify`                       | Inspect, create or verify JWTs with explicit key input                               | [Workflows](docs/workflows.md#inspect-or-verify-a-jwt)       |
