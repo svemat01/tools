@@ -35,3 +35,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # scratch experiments
 scratch
+
+# generated ready outputs (reproducible, recorded locally for undo)
+.sv-ready/
+sv-ready/

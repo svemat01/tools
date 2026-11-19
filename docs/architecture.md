@@ -1,5 +1,7 @@
 # Architecture
 
+[Home](../README.md) · [Development](development.md) · [User workflows](workflows.md)
+
 `src/kit/` makes `@bomb.sh/router` 0.8 and `@bomb.sh/tab` 0.0.22 work as one CLI without wrapping either. Router owns definitions, parsing, models, help and errors. Tab owns completion parsing and shell scripts. The kit adds:
 
 | Concern                       | Module           | Size of the idea                                               |
@@ -127,3 +129,27 @@ These are Tab's, not the kit's, and each is pinned or documented by tests:
 - Completion of dynamically discovered routes (`dynamic()`) would need I/O during completion, which the kit deliberately never does. Use the app-level `tab` hook to add them from a cache if needed.
 - Router decodes values before schemas see them (`007` → `7` first), so values that look like numbers need string schemas. That's Router behaviour, documented upstream.
 - Version-sensitive code is isolated and tested, but Router and Tab are pre-1.0. Upgrade both deliberately, then run `bun run verify`.
+
+## Sharing sessions
+
+`commands/share.ts` uses the normal Router/kit handler and `AppContext.confirm` to preview and approve one session. `lib/share.ts` owns bounded static manifests, strict loopback target parsing and the fixed request handler. The handler serves only inspected file identities and checks symlink components and open file metadata around reads; it never interprets user route definitions. Static serving uses Bun's loopback HTTP server. A session abort controller joins context cancellation and an optional expiry timer, with listener and timer cleanup in `finally`.
+
+Public mode reuses `lib/tunnel.ts` and its single cloudflared output parser. The optional `targetUrl` preserves an already-validated HTTP(S)/IPv6 origin; `onReady` lets share emit its own readiness envelope without buffering until tunnel exit. Existing tunnel command output remains unchanged. Tunnel cancellation escalates to SIGKILL after one second if necessary and awaits process exit. Share writes no files, history, domain or account settings.
+
+## Ready preparation workflow
+
+`src/lib/ready.ts` separates `inspectReady(targets, options)`, `planReady(inspection)` and
+`applyReady(plan)`. Inspection performs bounded recursive selection, project config validation
+and existing blog/inspection checks. Image sources are bounded in-memory snapshots; planning
+passes those buffers directly to the shared `transformImage` implementation. There are no
+preview temporary files. A SHA-256 fingerprint of each encoding snapshot is attached to every
+image/report file operation. Application uses only `executeFilePlan` create operations, retaining
+its source checks, no-clobber publication and existing recovery/undo semantics. The API's
+`sources` and `operations` contain private buffers; the CLI serializes only entries/actions and
+receipts. Budget constants live in `READY_LIMITS`; README describes their memory implications.
+
+`src/lib/git-selection.ts` exposes reusable `selectGitChanges`. Git name lists use `-z` and argv
+arrays, staged selection avoids HEAD references (supporting unborn repositories), deleted paths
+are distinguished from existing inputs, and scope filtering uses path boundaries. This helper
+has no mutation or watch behavior. Ready's command uses native Router definitions and the kit's
+context confirmation service; no additional parser or execution framework is involved.

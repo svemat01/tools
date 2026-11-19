@@ -2,7 +2,7 @@
 
 Use Bun for installation, execution, formatting, linting, types and tests.
 
-A personal CLI built on `@bomb.sh/router` (commands, parsing, help) and `@bomb.sh/tab` (shell completion), glued together by the thin layer in `src/kit/`. Read `README.md` for the authoring API and `docs/architecture.md` for the design.
+A personal CLI built on `@bomb.sh/router` (commands, parsing, help) and `@bomb.sh/tab` (shell completion), glued together by the thin layer in `src/kit/`. Read `README.md` for user workflows, `docs/development.md` for the authoring API and `docs/architecture.md` for the design.
 
 Adding a command:
 
@@ -27,3 +27,9 @@ File and content safety:
 - Blog preparation coordinates all selected posts through one prepare session; do not independently apply posts in parallel.
 - Preserve code, frontmatter and MDX expressions during prose cleanup. Rewrite URLs only through exact source spans.
 - Test command wiring as well as library helpers when adding or changing an option.
+
+Documentation:
+
+- User-facing behavior and examples belong in the relevant docs guide; keep README concise.
+- Run `bun run docs:generate` after changing command descriptions/options, then `bun run docs:check`.
+- `docs/reference.md` is generated from actual --help output; do not hand-edit it.

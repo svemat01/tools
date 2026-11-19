@@ -12,7 +12,9 @@
     "check": "bun check",
     "lint": "bun lint --max-warnings 0",
     "fmt": "bun fmt",
-    "verify": "bun fmt --check && bun lint --max-warnings 0 && bun check && bun test"
+    "verify": "bun fmt --check && bun lint --max-warnings 0 && bun check && bun test && bun run docs:check",
+    "docs:generate": "bun scripts/docs.ts",
+    "docs:check": "bun scripts/docs.ts --check"
   },
   "dependencies": {
     "@bomb.sh/router": "0.8.0",

@@ -1,325 +1,68 @@
 # sv
 
-A personal CLI toolkit on [Bun](https://bun.com), [`@bomb.sh/router`](https://bomb.sh/docs/router/) and [`@bomb.sh/tab`](https://bomb.sh/docs/tab/).
+A personal command-line toolkit for inspecting files, preparing images and blog posts, reviewing changes, and sharing local work.
 
-`src/kit/` is the integration layer for parsing, execution, type verification and shell completion. Commands are native Router definitions. The kit attaches handlers, checks the composed tree at compile time, runs it, and generates Tab shell completion from the same definitions. It never hides either library: Router intents, models and printers, and Tab's native command objects, all stay reachable.
+Preview a content batch with `ready`, reuse verified outputs on repeat runs, choose image quality in an offline comparison, and undo explicitly recorded outputs. Everything runs locally; public sharing starts only when requested.
 
-```bash
-bun install
-bun run sv img web cat.png --format avif    # run from source
-bun link && sv --help                        # or put `sv` on your PATH
-```
+## Start here
 
-| Task                      | Command                       |
-| ------------------------- | ----------------------------- |
-| Tests (runtime + shells)  | `bun test`                    |
-| Types (incl. type tests)  | `bun check`                   |
-| Lint                      | `bun lint`                    |
-| Format / check formatting | `bun fmt` / `bun fmt --check` |
-| Everything CI runs        | `bun run verify`              |
-
-`check`, `lint` and `fmt` are Bun's built-in tools. The exact Bun version for them is pinned as a dev dependency (`bun lint` is still canary-only), so `bun check`, `bun lint` and `bun fmt` run the same toolchain on any machine once `bun install` has run.
-
-## Shell completion
+Requires [Bun](https://bun.com) 1.4 or newer. From this checkout:
 
 ```bash
-# zsh (needs compinit)
-echo 'source <(sv complete zsh)' >> ~/.zshrc
-# bash (needs bash >= 4 and bash-completion; on macOS: brew install bash bash-completion@2)
-echo 'source <(sv complete bash)' >> ~/.bashrc
+bun install --frozen-lockfile
+bun link
+sv doctor
+sv inspect .
 ```
 
-The scripts run `sv` by name, so `sv` must be on your `PATH` (`bun link`). To try completion without installing, define a function in the current shell first: `sv() { bun /path/to/tools/src/main.ts "$@"; }`. To see what the shell sees, run `sv complete -- img web --format ""`.
+Use `bun run sv ...` from the repository if you prefer not to link the executable. See [installation, optional tools and shell completion](docs/getting-started.md).
+
+## Five useful things
+
+```bash
+sv ready ./images                         # preview; no outputs written
+sv ready ./images --review --apply        # confirm, create images/reports, record undo history
+sv img tune photo.jpg --open              # offline comparison; explicitly open the report
+sv paste --json                           # clipboard metadata; no raw text/token output
+sv share ./site --dry-run                 # inspect exactly which files would be served
+```
+
+Replace example paths with your own. `ready` currently applies static image outputs; it checks/suggests workflows for other content. Reported validation errors block application; warnings can still need attention. [Choose a workflow](docs/workflows.md).
 
 ## Commands
 
-| Group          | Commands                                 | Purpose                                                        |
-| -------------- | ---------------------------------------- | -------------------------------------------------------------- |
-| `img`          | `web`, `og`, `resize`, `compare`, `info` | WebP conversion, cover optimization, resizing, diffs, metadata |
-| `blog`         | `check`, `prepare`                       | Validate and safely prepare Markdown/MDX posts                 |
-| `video`        | `webm`                                   | Convert video to WebM/VP9                                      |
-| `gremlins`     | —                                        | Find and fix invisible or suspicious Unicode                   |
-| `tunnel`       | —                                        | Expose a local port through a Cloudflare Quick Tunnel          |
-| `port-forward` | `pf` (shorthand)                         | Reach a remote TCP port on your computer over SSH              |
-| `jwt`          | `decode`, `sign`, `verify`               | Inspect and work with JSON Web Tokens                          |
-| `dev`          | `echo`                                   | Small development helpers                                      |
-
-Every command has `--help` with its options, `--json` where structured output helps, and predictable exit codes: `0` success, `1` runtime failure, `2` usage error. Destructive actions are opt-in and previewed first.
-
-### Images
-
-```bash
-# Convert a batch to WebP, capped at 1600px wide, without overwriting anything.
-sv img web posts/ --width 1600 --quality 82
-
-# Optimize OpenGraph covers. PNG stays PNG unless --format says otherwise.
-sv img og covers/*.png --target 1200x630 --strict
-
-# Resize with aspect-ratio-aware fitting. Upscaling is off by default.
-sv img resize hero.jpg --width 1280 --fit cover
-
-# Compare two builds; exit 1 when more than 0.5% of pixels differ.
-sv img compare before.png after.png --max-diff 0.5
-
-# Inspect dimensions, format, size and animation metadata.
-sv img info cover.png hero.jpg
-```
-
-Existing outputs are never replaced unless you pass `--force`; otherwise the tool picks `name-1.webp`, `name-2.webp`, and so on. Batch destinations are reserved during planning, so dry runs handle colliding filenames consistently. If an output appears after planning, writing fails instead of replacing it. `--dry-run` performs the transform to report sizes but writes no files. Originals are preserved by default; `--force` can replace an original when it is also the output path.
-
-`img web` preserves existing target-format bytes when resizing is unnecessary. Pass `--reencode` or an explicit `--quality` to recompress them. `--force` controls replacement, independently of recompression. `img og` preserves PNG pixel values by default; `--palette` explicitly enables palette quantization.
-
-### Blog
-
-`blog` is layout-agnostic. Point it at a project root and describe the layout in `sv.blog.json` (or `.sv/blog.json`, or `blog.config.json`). See [`examples/ens-blog/sv.blog.json`](examples/ens-blog/sv.blog.json) for a complete example.
-
-```bash
-sv blog check posts/ --strict
-sv blog prepare posts/ --dry-run
-sv blog prepare posts/ --yes
-```
-
-`check` validates metadata, local links and media, alt text, slugs, oversized assets, Notion export artifacts, tracking parameters and Unicode. `prepare` previews every edit before writing, removes Notion artifacts, strips tracking parameters, replaces invisible characters, normalizes blank lines, and rewrites referenced images. Deletion requires `prepare.deleteOriginals: true` (or `--delete-originals`). Even then, shared/public assets and originals with possible remaining references are preserved. Cleanup protects code, frontmatter and MDX expressions; ambiguous URL source syntax is left unchanged. Functional query parameters such as `s`, `source` and `ref` are preserved.
-
-Preparation shares image plans across posts and checks input fingerprints before applying changes. Entries are updated sequentially; originals are considered for deletion only after all entries succeed. Individual writes are atomic, but the batch has no rollback: failures report completed writes for recovery. Encoded image data is held once per unique asset until application. JSON output requires `--yes` to apply (`--dry-run --json` previews without approval). It never publishes or opens a pull request.
-
-Minimal config:
-
-```json
-{
-  "name": "My blog",
-  "postsDir": "posts",
-  "entries": ["index.md", "index.mdx"],
-  "metadataFiles": ["meta.json"],
-  "requiredMetadata": ["title", "slug"],
-  "slugField": "slug",
-  "prepare": {
-    "imageFormat": "webp",
-    "imageWidth": 1600,
-    "imageQuality": 82
-  }
-}
-```
-
-### Unicode gremlins
-
-```bash
-sv gremlins src/                       # scan, respecting .gitignore
-sv gremlins docs/ --min-severity warn  # only show warnings and errors
-sv gremlins docs/ --fix --dry-run      # preview safe replacements
-sv gremlins docs/ --fix --yes          # apply, preserving encoding and line endings
-```
-
-Scanning and fixing are separate. `--fix` previews first, asks for confirmation on a TTY, and refuses to overwrite a file that changed after the scan. Typography replacements (curly quotes, en dashes) require `--fix-typography`. Missing targets and scan errors produce a failure exit status. Binary/non-UTF-8 files and files above `--max-bytes` are intentionally skipped and reported. Dry runs report findings as remaining and exit nonzero while findings exist. Replacement preserves file permissions. Explicit `gremlins --fix` applies across the selected file, including literal strings; review the preview when changing source code.
-
-### Tunnel
-
-```bash
-sv tunnel 3000
-sv tunnel 8080 --host 127.0.0.1 --copy
-```
-
-`tunnel` prints an exposure warning, starts a Cloudflare Quick Tunnel with `cloudflared`, prints the public URL, and cleans up the child process on Ctrl+C. It does not require a Cloudflare account. Quick Tunnel URLs are temporary and public; do not expose sensitive services. `--json` emits the URL as soon as the tunnel is ready and keeps running until stopped.
-
-### SSH port forwarding
-
-```bash
-sv port-forward jab-carbon 3000
-sv pf user@example.com 3000 8080
-```
-
-`port-forward` uses OpenSSH and accepts a host or an alias from your SSH config. It forwards to `localhost` on that host and prints the local address to open. With no local port specified, it starts at the target port and increments past ports already in use. An explicit local port must be available. The local listener binds to `127.0.0.1`. Press Ctrl+C to close the forward.
-
-### Video
-
-```bash
-sv video webm clip.mp4 --width 1920 --crf 32
-sv video webm recordings/ --audio strip --dry-run
-```
-
-`video` requires `ffmpeg` and `ffprobe` on `PATH`. It preserves the aspect ratio, never upscales, keeps audio as Opus unless `--audio strip` is set, and removes partial output files if encoding fails.
-
-### JWT
-
-```bash
-# Decode without a secret; this never verifies the signature.
-sv jwt decode "$TOKEN" --json
-
-# Secrets come from the environment, a file, or stdin — never argv.
-export JWT_SECRET='...'
-sv jwt sign --payload '{"sub":"user-1"}' --secret-env JWT_SECRET --expires-in 1h
-sv jwt verify "$TOKEN" --alg HS256 --secret-env JWT_SECRET --issuer my-app
-```
-
-`verify` requires `--alg` so a token cannot choose its own algorithm. `decode` reports `verified: false`; use `verify` when the signature matters. `--json` is available on all three commands.
-
-## Adding a command
-
-1. **Define it with Router and attach a handler.** Everything in `command(...)` is plain `@bomb.sh/router`, and the handler's input is inferred from it.
-
-   ```ts
-   // src/commands/img/thumb.ts
-   import { argument, command, description, name, option, schema } from "@bomb.sh/router";
-   import { z } from "zod";
-
-   import { complete, defineCommand, files } from "../../kit/index.ts";
-
-   export const thumb = defineCommand(
-     command(
-       name("thumb"),
-       description("Make a thumbnail"),
-       argument(name("input"), schema(z.string()), complete(files({ extensions: ["png", "jpg"] }))),
-       option(name("size"), schema(z.number().int().default(256)), complete(["128", "256", "512"])),
-     ),
-     {
-       run({ model }, context) {
-         // model: { input: string; size: number }
-         context.stdout.write(`${model.input} @ ${model.size}px\n`);
-       },
-     },
-   );
-   ```
-
-To read parent options, export a bundle from its own module, declare `inherit: { img: imgOptions }`, and read `img` from the handler’s third argument.
-
-2. **Mount it** inside its group, which is again plain Router: `route(name("img"), imgOptions, web, og, resize, compare, info, thumb)`.
-
-3. **Run `bun check && bun test`.** If the command can't work where you mounted it, `bun check` fails at `createApp(...)` in `src/app.ts` and names the route. That covers a missing handler, an inherited bundle without an applier, missing context services, duplicate names, a widened route type, and a missing checkpoint driver.
-
-There is nothing else to register: dispatch, help, and completion all come from the definition.
-
-### Groups and nesting
-
-| You want                              | Write                                                                           |
-| ------------------------------------- | ------------------------------------------------------------------------------- |
-| A group that only contains commands   | `route(name("img"), ...children)`; bare `sv img` prints its help                |
-| A command that also has subcommands   | `defineCommand(command(name("dev"), ...options, ...children), { run })`         |
-| An executable root (`sv` alone)       | `defineCommand(command(name("sv"), ...), { run })`                              |
-| A reusable bundle of options/children | `extend(...)` (Router)                                                          |
-| Children from a module, as a list     | `export const commands = [a, b] as const`, then `route(name("x"), ...commands)` |
-
-Keep child lists as tuples. A plain `AnyRoute[]` throws away every path and model type, and `createApp` rejects it.
-
-### Parent options: `inherit`
-
-Router scopes every option to the route that declares it. A command declares the option bundles it reads under local aliases; the handler receives their typed models as its third argument:
-
-```ts
-// src/commands/img/options.ts — its own module, so children can import it
-export const imgOptions = extend(option(name("quality"), schema(z.number().int().default(80))));
-
-// src/commands/img/web.ts
-export const web = defineCommand(
-  command(name("web"), option(name("quality"), schema(z.number().optional()))),
-  {
-    inherit: { img: imgOptions },
-    run({ model }, _context, { img }) {
-      const quality = model.quality ?? img.quality; // number | undefined, then number
-    },
-  },
-);
-```
-
-`createApp` checks that a route on the mount path provides a compatible model. Runtime validation requires the exact bundle, by parameter identity. A different bundle with the same shape passes the type check but fails runtime validation. The nearest route applying the bundle wins, including the command itself and root. Namespaces stay separate: `img.quality` and `model.quality` above.
-
-Commands no longer depend on mount paths: moving a group does not break its children, and handlers do not index models by path strings. Keep parent bundles in their own module to avoid circular imports.
-
-**Option position follows Router.** Parent options go before the child's name:
-
-```bash
-sv --verbose img --quality 40 web cat.png      # ok
-sv img web cat.png --verbose                   # error: unexpected `--verbose`
-                                               # hint: --verbose is an option of `sv`; put it before `img`
-```
-
-This was a deliberate choice; see [docs/architecture.md](docs/architecture.md#option-position).
-
-### Application context
-
-Handlers get a second argument: the context. By default it's `BaseContext` (`program`, `stdout`, `stderr`, `env`, `cwd`, `signal`), and tests replace these through `app.run(argv, { stdout, env, cwd, ... })`. Application services live in `src/context.ts`, including injectable `confirm()` and `readStdin()` functions. Prompts use stderr so JSON stdout stays parseable. A handler that needs them annotates the parameter:
-
-```ts
-run({ model }, context: AppContext) {
-  context.log.debug("...");
-}
-```
-
-`createApp(sv, { context: createContext })` builds the context once per executed command, never for help, errors or completion. It receives the execute intent, so root options like `--verbose` can configure services without being flattened into the context. The factory's return type is checked against every handler's declared context.
-
-### Completion
-
-Completion is derived from the Router definitions: subcommands, descriptions, options and their aliases, boolean versus value-taking flags, `--no-x` negations, positional and variadic arguments, and `--help`/`--version`. Values are **never** guessed from schemas. Where you want candidates, add `complete()` to the parameter, next to `schema()`:
-
-```ts
-option(name("format"), schema(z.enum(["webp", "avif"])), complete(["webp", "avif"]));
-option(name("theme"), complete([{ value: "dark", description: "Dark theme" }]));
-argument(name("input"), complete(files({ extensions: ["png"] }))); // shell-native, handles spaces and dirs
-option(name("cwd"), complete(directories()));
-option(
-  name("branch"),
-  complete(function (add) {
-    // a native Tab handler
-    for (const branch of listBranches()) add(branch, ""); // `this` is Tab's Option/Argument
-  }),
-);
-```
-
-Because the completion is attached to the parameter, renaming the flag with `cli()` or reshaping the model with `transform()` can't break the link.
-
-**Native Tab access.** Two hooks hand you Tab's own objects after generation:
-
-```ts
-// per command (in defineCommand's spec)
-tab(command, { root, path }) {
-  command.option("legacy", "Old flag", (add) => add("yes", ""));
-}
-
-// per app; `command(path)` only accepts route paths of the tree
-createApp(sv, {
-  tab({ root, command }) {
-    command("/img/web").options.get("format")!.handler = (add) => add("webp", "");
-  },
-});
-```
-
-`app.tab()` returns a fresh native `RootCommand` tree for inspection. `app.complete(words)` answers a request in-process, which is handy in tests.
-
-Completion handlers must be synchronous and side-effect free. Completion requests never parse with Router, never build the context, never run checkpoint drivers, and never call command handlers.
-
-### Advanced Router features
-
-All Router elements work inside definitions: `transform()`, `extend()`, `cli()`, `env()`, `multiple()`, `checkpoint()`, `dynamic()`.
-
-- **`checkpoint()` / `dynamic()`**: `createApp` requires a typed driver (it won't compile without one). The driver narrows `step.route`, does the I/O, and returns `step.resume(...)`. It also runs before help/version, because Router needs the full route graph. Handlers for routes created inside `dynamic()` work as usual. Completion only knows statically declared routes.
-- **Value and env sources** are off by default. Router derives env names from route path plus parameter name, so a root option `path` would read `$PATH`. Opt in explicitly with `createApp(sv, { sources: (base) => ({ envs: [{ name: "env", value: base.env }] }) })`.
-- **Bypassing the kit**: `app.parse(argv)` returns Router's own typed result (checkpoints driven, nothing printed or run), and `app.execute(intent)` dispatches one.
-
-## Testing commands
-
-```ts
-import { runApp } from "../test/support/io.ts";
-const { code, stdout, stderr } = await runApp(app, ["img", "web", "cat.png"]);
-expect(app.complete(["img", "web", "--format", ""]).candidates).toEqual([...]);
-```
-
-- `test/app.test.ts`: dispatch, models, scoping, help/version/errors, context, checkpoints, validation
-- `test/tab.test.ts`: the generated native Tab tree and completion requests through Tab's real parser
-- `test/router-meta.test.ts`: the Router internals the kit relies on, pinned against the installed version
-- `test/scripts.test.ts`: exact bash and zsh script fixes, plus shell syntax checks when available
-- `test/shell.test.ts`: generated scripts driven by real zsh and bash when available
-- `test/cli.test.ts`: the real `sv` executable as a subprocess
-- `test/types/*.ts`: compile-time tests (`expectTypeOf`, `@ts-expect-error`), run by `bun check`
-
-## Layout
-
-```
-src/
-  main.ts            executable entry (process wiring only)
-  app.ts             composition root: the `sv` tree and createApp()
-  options.ts         root options (importable as an ancestor)
-  context.ts         AppContext and its factory
-  commands/          one module per command; groups are folders
-  lib/               filesystem, media, text and blog operations
-  kit/               the Router + Tab integration (see docs/architecture.md)
-test/
-```
+| Command                                              | Use it for                                                                           | Guide                                                        |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `ready`                                              | Preview/apply bounded image batches, optional review HTML, Git `--changed` selection | [Ready](docs/ready.md)                                       |
+| `watch`                                              | Continuous read-only checks, changed-file selection and one-shot checks              | [Watch](docs/watch.md)                                       |
+| `inspect`                                            | Read-only metadata and sampled directory summaries                                   | [Getting started](docs/getting-started.md)                   |
+| `doctor`, `init`                                     | Check optional dependencies and create a minimal project marker                      | [Configuration](docs/configuration.md)                       |
+| `img web`, `og`, `resize`, `compare`, `info`, `tune` | Convert, resize, inspect, compare and visually tune images                           | [Images](docs/images.md)                                     |
+| `blog check`, `prepare`                              | Validate posts and preview/apply conservative cleanup                                | [Blog](docs/blog.md)                                         |
+| `history`, `undo`                                    | Inspect or reverse recorded file operations                                          | [History](docs/history.md)                                   |
+| `paste`                                              | Privately summarize or explicitly save clipboard input                               | [Clipboard](docs/clipboard.md)                               |
+| `share`, `tunnel`                                    | Serve local files/services and optionally start a public Quick Tunnel                | [Sharing](docs/sharing.md)                                   |
+| `port-forward`, `pf`                                 | Reach a remote TCP port over SSH                                                     | [SSH port forwarding](docs/sharing.md#ssh-port-forwarding)   |
+| `video webm`                                         | Convert a recording with FFmpeg                                                      | [Workflows](docs/workflows.md#convert-a-recording)           |
+| `gremlins`                                           | Find suspicious Unicode and preview replacements                                     | [Workflows](docs/workflows.md#find-suspicious-unicode)       |
+| `jwt decode`, `sign`, `verify`                       | Inspect, create or verify JWTs with explicit key input                               | [Workflows](docs/workflows.md#inspect-or-verify-a-jwt)       |
+| `dev`, `dev echo`                                    | Runtime information and small development helpers                                    | [Workflows](docs/workflows.md#small-development-helpers)     |
+| `complete`                                           | Generate shell scripts or inspect completion protocol output                         | [Shell completion](docs/getting-started.md#shell-completion) |
+
+[Command reference](docs/reference.md) lists the installed command tree and its native help. Every command has `--help`. Global options go before the command: `sv --cwd ./project ready . --changed`.
+
+## Know what changes
+
+- `ready` previews by default. `--apply` asks after the plan; `--yes` authorizes application.
+- Existing outputs are preserved by default. Output naming and explicit replacement options are command-specific.
+- Applied `ready` outputs and `img web --record` create local receipts. `sv undo` only covers recorded operations; it is not a universal rollback command.
+- Clipboard summaries omit copied text, paths, URLs and tokens. Explicit saves use private permissions.
+- Sharing defaults to loopback. `--public` deliberately exposes the selected files or service through Cloudflare.
+
+Read each guide's limits before applying a large batch. Multi-file changes are not transactions. [Troubleshooting and recovery](docs/troubleshooting.md).
+
+## Documentation and development
+
+[Getting started](docs/getting-started.md) · [Workflows](docs/workflows.md) · [Configuration](docs/configuration.md) · [Command reference](docs/reference.md) · [Troubleshooting](docs/troubleshooting.md) · [Development](docs/development.md) · [Architecture](docs/architecture.md)
+
+To work on the code, install dependencies and run `bun run verify` for formatting, lint, types and tests. [The development guide](docs/development.md) explains command authoring and reusable APIs.

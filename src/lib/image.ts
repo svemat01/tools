@@ -86,7 +86,8 @@ export async function inspectImage(path: string): Promise<ImageInfo> {
   return {
     path,
     bytes: await fileSize(path),
-    format: metadata.format ?? "unknown",
+    format:
+      metadata.format === "heif" && metadata.compression === "av1" ? "avif" : (metadata.format ?? "unknown"),
     width,
     height,
     ...(metadata.space === undefined ? {} : { space: metadata.space }),
@@ -192,7 +193,7 @@ function applyEncode(pipeline: Sharp, encode: EncodeSpec): Sharp {
  * Decode once, optionally resize, then encode. The caller receives bytes and
  * writes them atomically; this function never touches the output path.
  */
-export async function transformImage(input: string, spec: TransformSpec): Promise<TransformResult> {
+export async function transformImage(input: string | Buffer, spec: TransformSpec): Promise<TransformResult> {
   const metadata = await sharp(input).metadata();
   const animated = isAnimated(metadata) && spec.encode.format !== "jpeg" && spec.encode.format !== "png";
   const source = sharp(input, animated ? { animated: true } : {});

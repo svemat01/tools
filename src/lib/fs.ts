@@ -14,6 +14,8 @@ import { runCommand } from "./process.ts";
 
 export const IGNORE_DIRECTORIES = new Set([
   ".git",
+  ".sv-ready",
+  "sv-ready",
   ".hg",
   ".svn",
   ".next",
@@ -190,6 +192,10 @@ export async function planOutputPath(options: PlanOutputOptions): Promise<string
 export interface WriteOptions {
   /** Replacement must be explicit; otherwise publication fails if the destination exists. */
   readonly overwrite?: boolean;
+  /** Explicit publication mode, used for private operation state. */
+  readonly mode?: number;
+  /** Flush bytes and publication directory before returning. */
+  readonly durable?: boolean;
   /** Refuse replacement if the destination no longer has these bytes. */
   readonly expectedBytes?: Uint8Array;
 }
@@ -201,7 +207,7 @@ export async function publishFileAtomic(
   options: WriteOptions = {},
 ): Promise<void> {
   if (!options.overwrite) {
-    await chmod(temporary, 0o666 & ~process.umask());
+    await chmod(temporary, options.mode ?? 0o666 & ~process.umask());
     await link(temporary, path);
     await rm(temporary);
     return;
@@ -218,7 +224,7 @@ export async function publishFileAtomic(
       throw new Error(`${path} changed before writing; re-run the command`);
     }
   }
-  await chmod(temporary, existing ? existing.mode & 0o7777 : 0o666 & ~process.umask());
+  await chmod(temporary, options.mode ?? (existing ? existing.mode & 0o7777 : 0o666 & ~process.umask()));
   await rename(temporary, path);
 }
 
@@ -238,10 +244,19 @@ export async function writeFileAtomic(
     const handle = await open(temporary, "wx", 0o600);
     try {
       await handle.writeFile(data);
+      if (options.durable) await handle.sync();
     } finally {
       await handle.close();
     }
     await publishFileAtomic(temporary, path, options);
+    if (options.durable) {
+      const directory = await open(dirname(path), "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
   } finally {
     await rm(temporary, { force: true });
   }

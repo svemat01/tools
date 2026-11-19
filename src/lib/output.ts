@@ -74,3 +74,10 @@ export function json(value: unknown): string {
 export function pad(text: string, width: number): string {
   return text.length >= width ? text : text + " ".repeat(width - text.length);
 }
+
+/** Render a copyable POSIX-shell command without expanding argument contents. */
+export function shellCommand(argv: readonly string[]): string {
+  return argv
+    .map((value) => (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`))
+    .join(" ");
+}
